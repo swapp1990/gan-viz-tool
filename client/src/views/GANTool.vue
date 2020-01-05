@@ -82,15 +82,24 @@ export default {
         },
         handleGeneralMsg(content) {
             if(content.action) {
-                
+                if(content.action == "sendModelsJson") {
+                    this.showModels(content.modelsJson);
+                }  
             }
         },
         handleLogs(msg) {
+            this.logs.push(msg);
         },
         // GAN TOol
         beginTraining() {
             this.socket.emit('beginTraining');
         },
+        showModels(models) {
+            models.forEach(m => {
+                let modelObj = JSON.parse(m);
+                console.log(modelObj);
+            });
+        }
     }
 }
 </script>
