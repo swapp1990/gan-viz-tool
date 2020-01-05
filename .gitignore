@@ -1,3 +1,16 @@
+#Vye stuff
+.DS_Store
+node_modules/
+/dist/
+env/
+*.h5
+package-lock.json
+*.hdf5
+*.img
+*.pickle
+server/logs/
+server/results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -102,3 +115,4 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+.vscode/
