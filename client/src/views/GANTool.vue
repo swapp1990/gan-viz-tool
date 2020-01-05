@@ -11,6 +11,10 @@
             <div class="p-2">
                 <img v-for="i in generatedImgs" v-bind:src="'data:image/jpeg;base64,'+i" />
             </div>
+            <div class="p-2">
+                <img v-for="i in trainingImgs" v-bind:src="'data:image/jpeg;base64,'+i" />
+            </div>
+            
             <!-- Big GAN -->
             <div class="p-2">
                 <span>Loss Graph</span>
@@ -52,7 +56,8 @@ export default {
             training: true,
             //biggan
             models: [],
-            generatedImgs: []
+            generatedImgs: [],
+            trainingImgs: []
         }
     },
     mounted(){
@@ -110,8 +115,10 @@ export default {
             if(content.action) {
                 if(content.action == "sendModelsJson") {
                     this.showModels(content.modelsJson);
-                } else if(content.action == "sendFigs") {
-                    this.showFig(content.fig);
+                } else if(content.action == "sendRandomGeneratedFigs") {
+                    this.showRandomGeneratedFigs(content.fig);
+                } else if(content.action == "sendCurrTrainingFigs") {
+                    this.showCurrentTrainingFig(content.fig);
                 } else if(content.action == "sendGraph") {
                     this.showGraph(content.fig);
                 }
@@ -145,10 +152,16 @@ export default {
                 this.models.push(modelObj);
             });
         },
-        showFig(fig) {
+        showRandomGeneratedFigs(fig) {
             this.generatedImgs = [];
             fig.axes.forEach(a => {
                 this.generatedImgs.push(a.images[0].data);
+            });
+        },
+        showCurrentTrainingFig(fig) {
+            this.trainingImgs = [];
+            fig.axes.forEach(a => {
+                this.trainingImgs.push(a.images[0].data);
             });
         },
         showGraph(imgData) {

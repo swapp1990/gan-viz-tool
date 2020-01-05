@@ -43,7 +43,7 @@ class BigGAN():
     def __init__(self):
         self.BATCH_SIZE = 32
         self.EPOCHS = 100
-        self.DATASET_TYPE = 'celeba' #['cifar10', 'celeba']
+        self.DATASET_TYPE = 'cifar10' #['cifar10', 'celeba']
         
         self.disc_optimizer = Adam(0.0002, beta_1=0.0, beta_2=0.9)
         self.gen_optimizer = Adam(0.0002, beta_1=0.0, beta_2=0.9)
@@ -64,6 +64,7 @@ class BigGAN():
     def normalInit(self):
         self.makeModel()
         self.prepareData()
+        self.startTraining()
     
     #################### Create Model ##################################
     def makeModel(self):
@@ -82,32 +83,62 @@ class BigGAN():
     
     #Returns keras.Model
     def make_generator(self):
+        bn_epsilon=0.00002
+        bn_momentum = 0.9
         inp = Input(shape=(128,))
         x = Dense(4*4*512, kernel_initializer='glorot_uniform')(inp)
         x = Reshape((4,4,512))(x)
-        x = Conv2DTranspose(256, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='glorot_uniform')(x)
-        x = Conv2DTranspose(128, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='glorot_uniform')(x)
-        x = Conv2DTranspose(64, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='glorot_uniform')(x)
+        channels = 256
+        x = Conv2DTranspose(channels, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='glorot_uniform')(x)
+        x = BatchNormalization(epsilon=bn_epsilon, momentum=bn_momentum)(x)
+        x = self.self_attention(x, channels)
+        channels = channels//2
+        x = Conv2DTranspose(channels, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='glorot_uniform')(x)
+        x = BatchNormalization(epsilon=bn_epsilon, momentum=bn_momentum)(x)
+        channels = channels//2
+        x = Conv2DTranspose(channels, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='glorot_uniform')(x)
+        x = BatchNormalization(epsilon=bn_epsilon, momentum=bn_momentum)(x)
         x = Conv2DTranspose(3, kernel_size=3, strides=1, padding='same', activation='tanh', kernel_initializer='glorot_uniform')(x)
         gen_model = Model(inp, x, name='model_generator')
         return gen_model
     
     def make_discriminator(self):
+        bn_epsilon=0.00002
+        bn_momentum = 0.9
         inp = Input(shape=(32,32,3))
         channels = 64
         x = Conv2D(channels, kernel_size=4, strides=2, kernel_initializer='glorot_uniform', padding='same')(inp)
         x = LeakyReLU(0.1)(x)
+        x = BatchNormalization(epsilon=bn_epsilon, momentum=bn_momentum)(x)
+        x = self.self_attention(x, channels)
         channels = channels*2
         x = Conv2D(channels, kernel_size=4, strides=2, kernel_initializer='glorot_uniform', padding='same')(x)
         x = LeakyReLU(0.1)(x)
+        x = BatchNormalization(epsilon=bn_epsilon, momentum=bn_momentum)(x)
         channels = channels*2
         x = Conv2D(channels, kernel_size=4, strides=2, kernel_initializer='glorot_uniform', padding='same')(x)
         x = LeakyReLU(0.1)(x)
+        x = BatchNormalization(epsilon=bn_epsilon, momentum=bn_momentum)(x)
         x = tf.keras.layers.Flatten()(x)
         x = tf.keras.layers.Dense(1)(x)
         disc_model = Model(inp, x, name='model_discriminator')
         return disc_model
 
+    def self_attention(self, x, channels):
+        f = Conv2D(channels//8, kernel_size=1, strides=1, padding='same')(x)
+        g = Conv2D(channels//8, kernel_size=1, strides=1, padding='same')(x)
+        h = Conv2D(channels//2, kernel_size=1, strides=1, padding='same')(x)
+        f_flatten = tf.reshape(f, shape=([tf.shape(f)[0], f.shape[1]*f.shape[2],f.shape[-1]]))
+        g_flatten = tf.reshape(g, shape=([tf.shape(g)[0], g.shape[1]*g.shape[2],g.shape[-1]]))
+        h_flatten = tf.reshape(h, shape=([tf.shape(h)[0], h.shape[1]*h.shape[2],h.shape[-1]]))
+        s = tf.matmul(g_flatten, f_flatten, transpose_b=True)
+        beta = tf.nn.softmax(s)
+        o = tf.matmul(beta, h_flatten)
+        o = tf.reshape(o, shape=[tf.shape(x)[0], x.shape[1], x.shape[2], channels // 2])
+        o = Conv2D(channels, kernel_size=1, strides=1, padding='same')(o)
+        gamma = 0.5
+        x = o * gamma + x
+        return x
     #################### Prepare Data ##################################
     def scale_dataset(self, images, new_shape):
         images_list = list()
@@ -168,8 +199,9 @@ class BigGAN():
         self.gen_optimizer.apply_gradients(zip(gen_gradients, gen_model.trainable_variables))
         if n%20 == 0:
             self.broadcastGeneratedImages()
-            tf.print(gen_loss)
-            tf.print(disc_real_loss, disc_fake_loss, disc_loss)
+            self.broadcastTrainingImages(gen_output, target)
+            # tf.print(gen_loss)
+            # tf.print(disc_real_loss, disc_fake_loss, disc_loss)
             self.calculateLossHistory(gen_loss, disc_loss, disc_real_loss, disc_fake_loss)
             self.broadcastLossHistoryFig()
 
@@ -205,6 +237,32 @@ class BigGAN():
         msg["id"] = 1
         workerCls.broadcast_event(msg)
 
+    def broadcastTrainingImages(self, generated, target):
+        # print(generated.shape, target.shape)
+        generated = tf.clip_by_value(generated, clip_value_min=0, clip_value_max=1)
+        generated = tf.image.resize(generated, [128,128], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+        target = tf.clip_by_value(target, clip_value_min=0, clip_value_max=1)
+        target = tf.image.resize(target, [128,128], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+        genImgTile = generated[0]
+        targetImgTile = target[0]
+        for i in range(1,8):
+            genImgTile = np.concatenate((genImgTile, generated[i]), axis=1)
+        for i in range(1,8):
+            targetImgTile = np.concatenate((targetImgTile, target[i]), axis=1)
+        finalTile = np.concatenate((targetImgTile, genImgTile), axis=0)
+        my_dpi = 96
+        img_size = (128*8,128*2)
+        fig = plt.figure(figsize=(img_size[0]/my_dpi, img_size[1]/my_dpi), dpi=my_dpi)
+        ax1 = fig.add_subplot(1,1,1)
+        ax1.set_xticks([])
+        ax1.set_yticks([])
+        ax1.imshow(finalTile, cmap='plasma')
+        # plt.show()
+        mp_fig = mpld3.fig_to_dict(fig)
+        plt.close('all')
+        msg = {'action': 'sendCurrTrainingFigs', 'fig': mp_fig}
+        self.broadcast(msg)
+
     def broadcastGeneratedImages(self):
         test_noise = np.random.randn(8, 128).astype(np.float32)
         gen_imgs = self.generator.predict(test_noise)
@@ -223,7 +281,7 @@ class BigGAN():
         ax.imshow(newImg, cmap='plasma')
         mp_fig = mpld3.fig_to_dict(fig)
         plt.close('all')
-        msg = {'action': 'sendFigs', 'fig': mp_fig}
+        msg = {'action': 'sendRandomGeneratedFigs', 'fig': mp_fig}
         self.broadcast(msg)
         # plt.imsave('results/const.png',newImg)
     
@@ -300,6 +358,5 @@ def testInit():
 
 if __name__ == "__main__":
     print("running socketio")
-    socketio.run(app)
-
     # testInit()
+    socketio.run(app)
