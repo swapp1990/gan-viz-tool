@@ -117,3 +117,11 @@ venv.bak/
 .mypy_cache/
 .vscode/
 screenshots/
+server/stylegan1.png
+server/pl_img.png
+server/output.png
+server/last_r.png
+server/g_last_block.png
+server/const.png
+server/output2.png
+server/Models/

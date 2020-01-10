@@ -17,6 +17,7 @@ from flask import Response
 from flask_socketio import SocketIO, emit
 import mpld3
 from skimage.transform import resize
+import seaborn as sns; sns.set()
 
 #my classes
 from threads import Worker as workerCls
@@ -48,6 +49,7 @@ class SelfAttention(Model):
         self.g = Conv2D(channels//8, kernel_size=1, strides=1, padding='same', name="g_sa")
         self.h = Conv2D(channels, kernel_size=1, strides=1, padding='same', name="h_sa")
         self.gamma = tf.Variable(0., trainable=True, name="gamma_sa")
+        initializer = tf.initializers.GlorotNormal()
         self.flatten = Flatten()
     
     def hw_flatten(self, x):
@@ -65,9 +67,11 @@ class SelfAttention(Model):
 
         s = tf.matmul(g_flatten, f_flatten, transpose_b=True) # [B,N,C] * [B, N, C] = [B, N, N]
         b = tf.nn.softmax(s, axis=-1)
+        # tf.print(b.shape)
         o = tf.matmul(b, h_flatten)
+        reshaped_o = tf.reshape(o, tf.shape(x))
         y = self.gamma * tf.reshape(o, tf.shape(x)) + x
-        return y
+        return y, b, reshaped_o
 
 class BigGAN():
     def __init__(self):
@@ -90,6 +94,7 @@ class BigGAN():
         self.mean_real_disc_lh = []
         self.fake_dlh = []
         self.mean_fake_disc_lh = []
+        self.gamma_val = []
 
         self.const_test_noise = np.random.randn(8, 128).astype(np.float32)
 
@@ -124,7 +129,8 @@ class BigGAN():
         x = self.res_block_up(x, channels)
         channels = channels//2
         x = self.res_block_up(x, channels)
-        # x = self.self_attention(x, channels)
+        selfAttention_block = SelfAttention(channels)
+        x, b, o_r = selfAttention_block(x)
         x = Conv2DTranspose(3, kernel_size=3, strides=1, padding='same', activation='tanh', kernel_initializer='glorot_uniform')(x)
         gen_model = Model(inp, x, name='model_generator')
         return gen_model
@@ -147,17 +153,17 @@ class BigGAN():
         x = Conv2D(channels, kernel_size=4, strides=1, padding='same', kernel_initializer='glorot_uniform')(inp)
         x = LeakyReLU(0.2)(x)
         selfAttention_block = SelfAttention(channels)
-        x = selfAttention_block(x)
+        x, b, o_r = selfAttention_block(x)
         # print(x.shape)
-        x = self.res_block_down(inp, channels)
+        x = self.res_block_down(x, channels)
         channels = channels*2
         x = self.res_block_down(x, channels)
         channels = channels*2
         x = self.res_block_down(x, channels)
         x = tf.keras.layers.Flatten()(x)
         x = tf.keras.layers.Dense(1)(x)
-        disc_model = Model(inp, x, name='model_discriminator')
-        # for v in disc_model.trainable_variables:
+        disc_model = Model(inp, [x, b, o_r], name='model_discriminator')
+        # for v in disc_model.variables:
         #     print(v.name)
         return disc_model
 
@@ -238,13 +244,16 @@ class BigGAN():
         fake_y = -real_y
         with tf.GradientTape() as disc_tape, tf.GradientTape() as gen_type:
             gen_output = gen_model(noise_inputs, training=True)
-            disc_real_output = disc_model(target, training=True)
-            disc_fake_output = disc_model(gen_output, training=True)
+            disc_real_output, sa_real_map, reshaped_o_real = disc_model(target, training=True)
+            disc_fake_output, sa_fake_map, reshaped_o_fake = disc_model(gen_output, training=True)
+            # tf.print(reshaped_o_real.shape)
             gen_loss = self.wasserstein_loss(disc_fake_output, real_y)
             disc_real_loss = self.wasserstein_loss(disc_real_output, real_y)
             disc_fake_loss = self.wasserstein_loss(disc_fake_output, fake_y)
             disc_loss = disc_real_loss + disc_fake_loss
-        
+        for v in disc_model.trainable_variables:
+            if 'gamma_sa' in v.name:
+                self.gamma_val.append(v.value())
         disc_gradients = disc_tape.gradient(disc_loss, disc_model.trainable_variables)
         self.disc_optimizer.apply_gradients(zip(disc_gradients, disc_model.trainable_variables))
         gen_gradients = gen_type.gradient(gen_loss, gen_model.trainable_variables)
@@ -253,9 +262,21 @@ class BigGAN():
             self.broadcastGeneratedImages(const_test_noise=self.const_test_noise)
             self.broadcastTrainingImages(gen_output, target)
             tf.print(gen_loss)
+            self.plotHeatMap(sa_real_map[0])
+            self.plotImg(reshaped_o_real[0])
             # tf.print(disc_real_loss, disc_fake_loss, disc_loss)
             self.calculateLossHistory(gen_loss, disc_loss, disc_real_loss, disc_fake_loss)
             self.broadcastLossHistoryFig()
+
+    def plotHeatMap(self, data):
+        heat_map = sns.heatmap(data, xticklabels=False, yticklabels=False)
+        plt.savefig("output.png")
+    
+    def plotImg(self, o_img):
+        sh_img = o_img[:,:,0]
+        plt.imshow(sh_img)
+        plt.grid(False)
+        plt.imsave('const.png',sh_img)
 
     def fit(self, train_ds, epochs):
         for e in range(epochs):
@@ -342,14 +363,14 @@ class BigGAN():
     
     def broadcastLossHistoryFig(self, stepGap=1):
         xdata = [i*stepGap for i in range(len(self.gen_lh))]
-        fig = plt.figure(figsize=(8,4))
-        ax1 = fig.add_subplot(121)
-        ax1.plot(xdata, self.gen_lh, 'b-', label='gen_loss')
+        fig = plt.figure(figsize=(12,4))
+        ax1 = fig.add_subplot(131)
+        # ax1.plot(xdata, self.gen_lh, 'b-', label='gen_loss')
         ax1.plot(xdata, self.mean_gen_lh, 'c--', lw=3, label='mean_gen_loss')
         ax1.legend()
 
-        ax2 = fig.add_subplot(122)
-        l1 = ax2.plot(xdata, self.disc_lh, 'r-', label='disc_loss')
+        ax2 = fig.add_subplot(132)
+        # l1 = ax2.plot(xdata, self.disc_lh, 'r-', label='disc_loss')
         l2 = ax2.plot(xdata, self.mean_disc_lh, 'm--', lw=3, label='mean_disc_loss')
         l3 = ax2.plot(xdata, self.mean_real_disc_lh, 'g--', lw=3, label='mean_disc_real_loss')
         l4 = ax2.plot(xdata, self.mean_fake_disc_lh, 'y--', lw=3, label='mean_disc_fake_loss')
@@ -358,6 +379,10 @@ class BigGAN():
         ax1.set_ylabel('Gen Loss')
         ax2.set_xlabel('Steps')
         ax2.set_ylabel('Disc Loss')
+
+        ax3 = fig.add_subplot(133)
+        l1 = ax3.plot(self.gamma_val, 'r-', label='gamma_sa')
+        ax3.legend()
         # plt.show()
         mp_fig = mpld3.fig_to_html(fig)
         plt.close('all')
@@ -413,5 +438,6 @@ def testInit():
 
 if __name__ == "__main__":
     print("running socketio")
+
     # testInit()
     socketio.run(app)
