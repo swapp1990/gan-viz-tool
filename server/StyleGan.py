@@ -18,6 +18,14 @@ from tensorflow.keras.initializers import *
 from tensorflow.python.keras.utils import conv_utils
 from tensorflow.keras import initializers, regularizers, constraints
 
+from tensorflow.compat.v1 import ConfigProto
+from tensorflow.compat.v1 import InteractiveSession
+
+config = ConfigProto()
+config.gpu_options.per_process_gpu_memory_fraction = 0.95
+config.gpu_options.allow_growth = True
+session = InteractiveSession(config=config)
+
 class Conv2DMod(Layer):
     def __init__(self, filters, kernel_size, strides=1, padding='valid', dilation_rate=1, kernel_initializer='glorot_uniform',
                  kernel_regularizer=None, activity_regularizer=None, kernel_constraint=None, demod=True, **kwargs):
@@ -113,7 +121,7 @@ class Conv2DMod(Layer):
         base_config = super(Conv2DMod, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
-im_size = 128
+im_size = 256
 
 def do_upsample(x):
     return K.resize_images(x,2,2,"channels_last",interpolation='bilinear')
@@ -171,11 +179,11 @@ def g_block(inp, istyle, inoise, ch, upsample=True):
 
 class StyleGan(object):
     def __init__(self):
-        self.DATASIZE = 2048*4
+        self.DATASIZE = 2048*2
         self.learning_rate = 0.0001
         self.steps = 1000
         self.beta = 0.999
-        self.im_size = 128
+        self.im_size = 256
         self.n_layers = int(log2(self.im_size) - 1)
         self.latent_dim = 512
         self.bs = 16
@@ -232,7 +240,7 @@ class StyleGan(object):
         total_data = tfds.load(name='celeb_a', split='train')
         for img in total_data.take(self.DATASIZE):
             self.train_data.append(img['image'].numpy())
-        self.train_data = self.scale_dataset(self.train_data, [128,128])
+        self.train_data = self.scale_dataset(self.train_data, [256,256])
         # plt.imshow(self.train_data[0])
         # plt.show()
     
@@ -268,6 +276,7 @@ class StyleGan(object):
         x = d_block(x, 4*ch) #16,96
         x = d_block(x, 6*ch) #8,144
         x = d_block(x, 8*ch) #4,192
+        x = d_block(x, 16*ch) #4,192
         x = d_block(x, 16*ch, downsample=False) #4,384
         x = Flatten()(x)
         x = Dense(1, kernel_initializer='he_uniform')(x)
@@ -301,22 +310,23 @@ class StyleGan(object):
         x = Dense(4*4*4*ch, kernel_initializer='random_normal')(x)
         x = Reshape((4,4,4*ch))(x) #4,96
 
-        x,r = g_block(x,inp_style[0],inp_noise,32*ch,upsample=False) #4,768
+        x,r = g_block(x,inp_style[0],inp_noise,16*ch,upsample=False) #4,768
         outs.append(r)
-        x, r = g_block(x, inp_style[1], inp_noise, 16 * ch)  #8, 384
+        x, r = g_block(x, inp_style[1], inp_noise, 8 * ch)  #8, 384
         outs.append(r)
-        x, r = g_block(x, inp_style[2], inp_noise, 8 * ch)  #16
+        x, r = g_block(x, inp_style[2], inp_noise, 6 * ch)  #16
         outs.append(r)
-        x, r = g_block(x, inp_style[3], inp_noise, 6 * ch)  #32
+        x, r = g_block(x, inp_style[3], inp_noise, 4 * ch)  #32
         outs.append(r)
-        x, r = g_block(x, inp_style[4], inp_noise, 4 * ch)   #64
+        x, r = g_block(x, inp_style[4], inp_noise, 2 * ch)   #64
         outs.append(r)
         x, r = g_block(x, inp_style[5], inp_noise, 2 * ch)   #128
-        last_g_block = x
-        last_rgb = r
         outs.append(r)
         # print(x.shape)
-
+        x, r = g_block(x, inp_style[6], inp_noise, 1 * ch)   #128
+        outs.append(r)
+        last_g_block = x
+        last_rgb = r
         x = add(outs)
         x = Lambda(lambda y: y/2 + 0.5)(x) #Use values centered around 0, but normalize to [0, 1], providing better initialization
 
@@ -435,10 +445,10 @@ class StyleGan(object):
         gen_gradients = gen_tape.gradient(gen_loss, training_gen_model.trainable_variables)
         self.gen_optim.apply_gradients(zip(gen_gradients, training_gen_model.trainable_variables))
 
-        return disc_loss, gen_loss, pl_lengths, generated_images, [returned_pl_images, last_g_block[0], last_r[0]]
+        return disc_loss, gen_loss, pl_lengths, generated_images, [returned_pl_images, last_g_block[0], last_r]
     
     def train(self):
-        epochs = 100
+        epochs = 300
         #train alternating
         mixed_prob = 0.9
         #? Why is some prob mixes list used in the noise ?
@@ -452,26 +462,29 @@ class StyleGan(object):
         noise = np.random.uniform(0.0, 1.0, size = [self.bs, im_size, im_size, 1]).astype('float32')
         num_batches = int(self.train_data.shape[0] // self.bs)
         print(num_batches)
+        curr_savemodel_num = 0
         for e in range(epochs):
             np.random.shuffle(self.train_data)
-            print('Epochs ', e)
+            print('Epochs %d, StepsTaken %d'%(e,self.stepsTaken))
+            if e > 5:
+                self.save(curr_savemodel_num)
             for i in range(num_batches):
                 real_images = self.train_data[i*self.bs:(i+1)*self.bs].astype('float32')
                 apply_gp = self.stepsTaken % 2 == 0
                 apply_pl = self.stepsTaken % 16 == 0
-                disc_loss, gen_loss, pl_lengths, generated_images, [pl_generated_imgs, last_g_block, last_r] = self.train_step(real_images, styles, noise, perform_gp=apply_gp, perform_pl=apply_pl)
+                disc_loss, gen_loss, pl_lengths, generated_images, [pl_generated_imgs, last_g_block, last_r_list] = self.train_step(real_images, styles, noise, perform_gp=apply_gp, perform_pl=apply_pl)
                 #adjust path length penalty mean
                 if self.pl_mean == 0:
                     self.pl_mean = np.mean(pl_lengths)
                 self.pl_mean = 0.99*self.pl_mean + 0.01*np.mean(pl_lengths)
-                if self.stepsTaken % 50 == 0:
-                    self.saveOldWeightsForAverage()
-                if self.stepsTaken % 200 == 0:
-                    self.parameterAverage()
+                # if self.stepsTaken > 10000:
+                #     if self.stepsTaken % 50 == 0:
+                #         self.saveOldWeightsForAverage()
+                #     if self.stepsTaken % 200 == 0:
+                #         self.parameterAverage()
                 g = tf.clip_by_value(generated_images, clip_value_min=0, clip_value_max=1)
-                last_r = tf.clip_by_value(last_r, clip_value_min=0, clip_value_max=1)
                 plt.imsave('const.png',g[0].numpy())
-                plt.imsave('last_r.png',last_r.numpy())
+                # plt.imsave('last_r.png',last_r.numpy())
                 if pl_generated_imgs is not None:
                     pl_g = tf.clip_by_value(pl_generated_imgs, clip_value_min=0, clip_value_max=1)
                     plt.imsave('pl_img.png',g[1].numpy())
@@ -480,15 +493,19 @@ class StyleGan(object):
                 # plt.imshow(last_g_block[:,:,0], cmap='gray')
                 # plt.show()
                 self.visualizePlots(last_g_block)
+                
+                last_r_list = tf.clip_by_value(last_r_list, clip_value_min=0, clip_value_max=1)
+                self.visualizeStyles(last_r_list)
 
                 if self.stepsTaken % 100 == 0:
-                    print("Round " + str(self.stepsTaken) + ":")
+                    print("steps Taken ", self.stepsTaken)
                     print("D:", np.array(disc_loss))
                     print("G:", np.array(gen_loss))
                     # print("P:", self.pl_mean)
                     #Save Model
-                    if self.stepsTaken % 500 == 0:
-                        self.save(floor(self.stepsTaken/10000))
+                if self.stepsTaken % 10000 == 0:
+                    self.save(floor(self.stepsTaken/10000))
+                    curr_savemodel_num = self.stepsTaken/10000
                 self.stepsTaken = self.stepsTaken + 1
     
     def visualizePlots(self, features):
@@ -501,6 +518,18 @@ class StyleGan(object):
         plt.tight_layout()
         # plt.show()
         plt.savefig('g_last_block.png')
+        plt.close('all')
+
+    def visualizeStyles(self, styles):
+        xi,yj = 4,4
+        f, axarr = plt.subplots(xi,yj)
+        for i in range(xi):
+            for j in range(yj):
+                axarr[i,j].imshow(styles[i+j], cmap='gray')
+                axarr[i,j].axis('off')
+        plt.tight_layout()
+        # plt.show()
+        plt.savefig('last_r.png')
         plt.close('all')
 
     def save(self, num):
@@ -549,6 +578,6 @@ class StyleGan(object):
 styleGan = StyleGan()
 styleGan.prepareData()
 styleGan.makeModel()
-styleGan.load(2)
+styleGan.load(0)
 styleGan.train()
 
