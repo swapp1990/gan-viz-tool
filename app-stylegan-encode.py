@@ -1,7 +1,7 @@
-import tensorflow as tf
-print("tf version {}".format(tf.__version__))
-assert tf.test.is_gpu_available()
-assert tf.test.is_built_with_cuda()
+# import tensorflow as tf
+# print("tf version {}".format(tf.__version__))
+# assert tf.test.is_gpu_available()
+# assert tf.test.is_built_with_cuda()
 
 import os
 import time
@@ -12,6 +12,8 @@ import statistics
 import numpy as np
 from matplotlib import pyplot as plt
 import pickle
+import PIL.Image
+from PIL import ImageFilter
 from tqdm import tqdm
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -40,11 +42,12 @@ import dnnlib.tflib as tflib
 from keras.models import load_model
 from encoder.generator_model import Generator
 from encoder.perceptual_model import PerceptualModel, load_images
+from keras.applications.resnet50 import preprocess_input
 
 src_dir = "aligned_images/"
 generated_images_dir = "generated_images/"
 decay_steps = 4
-iterations = 500
+iterations = 100
 pt_stylegan_model_url = 'https://drive.google.com/uc?id=1MEGjdvVpUsu1jB4zrXZN7Y4kBBOzizDQ' # karras2019stylegan-ffhq-1024x1024.pkl
 pt_vgg_perceptual_model_url = 'https://drive.google.com/uc?id=1N2-m9qszOeVC9Tq77WxsLnuWwOedQiD2'
 cache_dir = 'cache/'
@@ -63,7 +66,7 @@ class StyleGanEncoding():
         print(decay_steps)
 
         ref_images = [os.path.join(src_dir, x) for x in os.listdir(src_dir)]
-        ref_images = list(filter(os.path.isfile, ref_images))
+        self.ref_images = list(filter(os.path.isfile, ref_images))
         if len(ref_images) == 0:
             raise Exception('%s is empty' % src_dir)
         
@@ -76,11 +79,15 @@ class StyleGanEncoding():
         self.curr_dlatents = None
 
     def normalInit(self):
+        self.makeModel()
+        self.startTraining()
+    
+    def makeModel(self):
         self.encodeGen, self.styleGanGenerator, self.styleGanDiscriminator = self.getPretrainedStyleGanNetworks()
         self.perceptual_model = self.getPretrainedVGGPerceptualModel()
         self.dlatentGenerator = self.getPretrainedResnetModel()
-
         self.build()
+
     #Use StyleGAN repo's dnnlib to download the stylegan model from url or cache if already downloaded
     def getPretrainedStyleGanNetworks(self):
         tflib.init_tf()
@@ -99,7 +106,6 @@ class StyleGanEncoding():
     
     def getPretrainedResnetModel(self):
         if os.path.exists(pt_resnet_local_path):
-            from keras.applications.resnet50 import preprocess_input
             ff_model = load_model(pt_resnet_local_path)
         print("downloaded pt resnet model")
         return ff_model
@@ -108,17 +114,50 @@ class StyleGanEncoding():
         self.perceptual_model.build_perceptual_model(self.encodeGen, self.styleGanDiscriminator)
         print("built perc model to train")
     
-    # def train():
+    def startTraining(self):
+        for images_batch in tqdm(split_to_batches(self.ref_images, batch_size), total=len(self.ref_images)//batch_size):
+            names = [os.path.splitext(os.path.basename(x))[0] for x in images_batch]
+            self.perceptual_model.set_reference_images(images_batch)
+            self.curr_dlatents = self.dlatentGenerator.predict(preprocess_input(load_images(images_batch,image_size=resnet_image_size)))
+            if self.curr_dlatents is not None:
+                self.encodeGen.set_dlatents(self.curr_dlatents)
+            op = self.perceptual_model.optimize(self.encodeGen.dlatent_variable, iterations=iterations, use_optimizer='ggt')
+            pbar = tqdm(op, leave=False, total=iterations)
+            best_loss = None
+            best_dlatent = None
+            for loss_dict in pbar:
+                pbar.set_description("Image: " + "; ".join(["{} {:.4f}".format(k, v) for k, v in loss_dict.items()]))
+                if best_loss is None or loss_dict["loss"] < best_loss:
+                    if best_dlatent is None:
+                        best_dlatent = self.encodeGen.get_dlatents()
+                    else:
+                        best_dlatent = 0.25 * best_dlatent + 0.75 * self.encodeGen.get_dlatents()
+                    self.encodeGen.set_dlatents(best_dlatent)
+                    generated_images = self.encodeGen.generate_images()
+                    saveGeneratedImages(generated_images[0])
+                    best_loss = loss_dict["loss"]
+            self.encodeGen.stochastic_clip_dlatents()
+            self.encodeGen.set_dlatents(best_dlatent)
+            generated_images = self.encodeGen.generate_images()
+            # print(generated_images.shape)
+            generated_dlatents = self.encodeGen.get_dlatents()
+            for img_array, dlatent, img_path, img_name in zip(generated_images, generated_dlatents, images_batch, names):
+                # print(img_array.shape)
+                img = PIL.Image.fromarray(img_array, 'RGB')
+                img.save(os.path.join("generated_images/", f'{img_name}.png'), 'PNG')
+                np.save(os.path.join("latent_rep/", f'{img_name}.npy'), dlatent)
+            self.encodeGen.reset_dlatents()
 
     ################### Thread Methods ###################################
     def doWork(self, msg):
         print("do work StyleGanEncoding", msg)
-        # if msg['action'] == 'makeModel':
-        #     self.makeModel()
+        if msg['action'] == 'makeModel':
+            self.makeModel()
         # elif msg['action'] == 'prepareData':
         #     self.prepareData()
-        # elif msg['action'] == 'startTraining':
-        #     self.startTraining()
+        elif msg['action'] == 'startTraining':
+            self.startTraining()
+
     def broadcast(self, msg):
         msg["id"] = 1
         workerCls.broadcast_event(msg)
@@ -222,6 +261,16 @@ class StyleGanEncoding():
         disc_fl = float("{0:.2f}".format(disc_fl))
         self.fake_dlh.append(disc_fl)
         self.mean_fake_disc_lh.append(statistics.mean(self.fake_dlh))
+
+def split_to_batches(l, n):
+    for i in range(0, len(l), n):
+        yield l[i:i + n]
+
+def saveGeneratedImages(img_array):
+    generated_images_dir = "generated_images/"
+    img = PIL.Image.fromarray(img_array, 'RGB')
+    img = img.resize((256,256),PIL.Image.LANCZOS)
+    img.save(os.path.join(generated_images_dir, f'const.png'), 'PNG')
 ################################# Socket #############################################
 threadG = None
 @socketio.on('init')
@@ -253,4 +302,4 @@ if __name__ == "__main__":
     print("running socketio")
 
     testInit()
-    socketio.run(app)
+    # socketio.run(app)
