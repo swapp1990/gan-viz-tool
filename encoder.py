@@ -93,7 +93,38 @@ class PerceptualModel:
         if (self.vgg_loss is not None):
             self.loss += self.vgg_loss * tf_custom_adaptive_loss(self.features_weight * self.ref_img_features, self.features_weight * generated_img_features)
         print(self.loss)
-    
+
+    def set_reference_images(self, images_list):
+        assert(len(images_list) != 0 and len(images_list) <= self.batch_size)
+        loaded_image = load_images(images_list, self.img_size, sharpen=True)
+        image_features = None
+        if self.perceptual_model is not None:
+            image_features = self.perceptual_model.predict_on_batch(preprocess_input(np.array(loaded_image)))
+            weight_mask = np.ones(self.features_weight.shape)
+        image_mask = np.ones(self.ref_weight.shape)
+        if image_features is not None:
+            features_space = list(self.features_weight.shape[1:])
+            existing_features_shape = [len(images_list)] + features_space
+            empty_features_shape = [self.batch_size - len(images_list)] + features_space
+            existing_examples = np.ones(shape=existing_features_shape)
+            empty_examples = np.zeros(shape=empty_features_shape)
+            weight_mask = np.vstack([existing_examples, empty_examples])
+            image_features = np.vstack([image_features, np.zeros(empty_features_shape)])
+
+        images_space = list(self.ref_weight.shape[1:])
+        existing_images_space = [len(images_list)] + images_space
+        empty_images_space = [self.batch_size - len(images_list)] + images_space
+        existing_images = np.ones(shape=existing_images_space)
+        empty_images = np.zeros(shape=empty_images_space)
+        image_mask = image_mask * np.vstack([existing_images, empty_images])
+        loaded_image = np.vstack([loaded_image, np.zeros(empty_images_space)])
+
+        if image_features is not None:
+            self.assign_placeholder("features_weight", weight_mask)
+            self.assign_placeholder("ref_img_features", image_features)
+        self.assign_placeholder("ref_weight", image_mask)
+        self.assign_placeholder("ref_img", loaded_image)
+
     def optimize(self, vars_to_optimize, iterations=100):
         vars_to_optimize = vars_to_optimize if isinstance(vars_to_optimize, list) else [vars_to_optimize]
         optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
@@ -186,7 +217,7 @@ perceptual_model.build_perceptual_model(generator, discriminator_network)
 
 src_dir = "aligned_images/"
 batch_size = 1
-iterations = 100
+iterations = 1000
 ff_model = None
 load_resnet_path = "cache/finetuned_resnet.h5"
 ref_images = [os.path.join(src_dir, x) for x in os.listdir(src_dir)]
@@ -196,6 +227,7 @@ generated_images_dir = 'generated'
 for images_batch in tqdm(split_to_batches(ref_images, batch_size), total=len(ref_images)//batch_size):
     names = [os.path.splitext(os.path.basename(x))[0] for x in images_batch]
     # print(names)
+    perceptual_model.set_reference_images(images_batch)
     dlatents = None
     if (ff_model is None):
         from keras.applications.resnet50 import preprocess_input

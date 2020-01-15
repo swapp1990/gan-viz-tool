@@ -126,3 +126,7 @@ server/const.png
 server/output2.png
 server/Models/
 cache/
+videos/
+latent_rep/
+generated_images/
+aligned_images/
