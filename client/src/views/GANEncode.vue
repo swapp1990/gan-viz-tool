@@ -3,11 +3,25 @@
         <button :class="getConnectClass()" @click="connectSocket()"><i class="icon-magnet"></i></button>
         <div v-if="connected">
             <div class="p-2">
+                <div>Init</div>
+                <hr>
                 <button @click="beginTraining()"><i class="icon-bolt"></i></button>
+                <div class="p-1">
+                    <div v-for="l in logs">{{l.log}}</div>
+                </div>
+                <hr>
             </div>
-            <div class="p-1">
-                <div v-for="l in logs">{{l.log}}</div>
+            <div v-if="initForPlay" class="p-2">
+                <div>Play With Latents</div>
+                <hr>
+                <div>
+                    <input type="range" id="customRange1" min="0" max="1" step="0.1"
+                    v-on:change="changeWeights()" v-model="latentW0">
+                    <span class="ml-3">Weights: {{latentW0}},{{(1-latentW0)}}</span>
+                </div>
+                <button @click="playLatents()"><i class="icon-youtube-play"></i></button>
             </div>
+
             <div class="p-2">
                 <img v-for="i in generatedImgs" v-bind:src="'data:image/jpeg;base64,'+i" />
             </div>
@@ -15,25 +29,10 @@
                 <img v-for="i in trainingImgs" v-bind:src="'data:image/jpeg;base64,'+i" />
             </div>
             
-            <!-- Big GAN -->
-            <div class="p-2">
+            <!-- Encoding Loss -->
+            <div v-if="gotGraph" class="p-2">
                 <span>Loss Graph</span>
                 <div class="mlp_div" id="mlp_loss_graph"></div>
-            </div>
-            <div class="p-2 row">
-                <div v-for="m in models" class="col-sm">
-                    <div>{{m.config.name}}</div>
-                    <div v-for="l in m.config.layers">
-                        <div class="row">
-                            <div class="col-sm">
-                                {{l.class_name}}
-                            </div>
-                            <!-- <div class="col-sm">
-                                {{getLayerShape(l)}}
-                            </div> -->
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
@@ -57,7 +56,11 @@ export default {
             //biggan
             models: [],
             generatedImgs: [],
-            trainingImgs: []
+            trainingImgs: [],
+            //Latent
+            initForPlay: false,
+            gotGraph: false,
+            latentW0: 0.7
         }
     },
     mounted(){
@@ -121,6 +124,8 @@ export default {
                     this.showCurrentTrainingFig(content.fig);
                 } else if(content.action == "sendGraph") {
                     this.showGraph(content.fig);
+                } else if(content.action == "initForPlay") {
+                    this.initForPlay = content.val;
                 }
             }
         },
@@ -144,6 +149,13 @@ export default {
         beginTraining() {
             this.models = []
             this.socket.emit('beginTraining');
+        },
+        playLatents() {
+            this.socket.emit('playWithLatents', this.latentW0);
+        },
+        changeWeights() {
+            console.log(this.latentW0);
+            this.socket.emit('playWithLatents', this.latentW0);
         },
         // showModels(models) {
         //     models.forEach(m => {
