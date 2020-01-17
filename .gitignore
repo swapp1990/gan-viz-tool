@@ -130,3 +130,6 @@ videos/
 latent_rep/
 generated_images/
 aligned_images/
+ffhq_dataset/latent_directions/
+ffhq_dataset/latent_representations/
+server/temp/

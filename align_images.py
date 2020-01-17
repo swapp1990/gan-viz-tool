@@ -8,7 +8,8 @@ from ffhq_dataset.landmarks_detector import LandmarksDetector
 import multiprocessing
 
 LANDMARKS_MODEL_URL = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
-
+RAW_IMAGES_DIR = 'server\\temp\\raw_images'
+ALIGNED_IMAGES_DIR = 'server\\temp\\aligned_images'
 
 def unpack_bz2(src_path):
     data = bz2.BZ2File(src_path).read()
@@ -17,6 +18,22 @@ def unpack_bz2(src_path):
         fp.write(data)
     return dst_path
 
+def alignImageandSave(img_name="photo1.jpeg"):
+    landmarks_model_path = unpack_bz2(get_file('shape_predictor_68_face_landmarks.dat.bz2',
+                                               LANDMARKS_MODEL_URL, cache_subdir='temp'))
+    landmarks_detector = LandmarksDetector(landmarks_model_path)
+    raw_img_path = os.path.join(RAW_IMAGES_DIR, img_name)
+    face_img_name = '%s.png' % (os.path.splitext(img_name)[0])
+    aligned_face_path = os.path.join(ALIGNED_IMAGES_DIR, face_img_name)
+    if os.path.exists(aligned_face_path):
+        print('Already aligned')
+        return True
+    print('Getting landmarks...')
+    for i, face_landmarks in enumerate(landmarks_detector.get_landmarks(raw_img_path), start=1):
+        print('Starting face alignment...')
+        image_align(raw_img_path, aligned_face_path, face_landmarks, output_size=1024, x_scale=1, y_scale=1, em_scale=0.1, alpha=False)
+        print('Wrote result %s' % aligned_face_path)
+    return True
 
 if __name__ == "__main__":
     """

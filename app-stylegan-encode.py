@@ -26,6 +26,7 @@ import seaborn as sns; sns.set()
 
 #my classes
 from server.threads import Worker as workerCls
+import align_images
 
 # instantiate the app
 app = Flask(__name__)
@@ -45,7 +46,9 @@ from encoder.generator_model import Generator
 from encoder.perceptual_model import PerceptualModel, load_images
 from keras.applications.resnet50 import preprocess_input
 
-src_dir = "aligned_images/"
+alignImgDir = "server\\temp\\aligned_images\\"
+encodeImgDir = "server\\temp\\encoded_images\\"
+latentRepsDir = "server\\temp\\latent_reps\\"
 generated_images_dir = "generated_images/"
 decay_steps = 4
 iterations = 100
@@ -66,10 +69,10 @@ class StyleGanEncoding():
         decay_steps *= 0.01 * iterations # Calculate steps as a percent of total iterations
         print(decay_steps)
 
-        ref_images = [os.path.join(src_dir, x) for x in os.listdir(src_dir)]
-        self.ref_images = list(filter(os.path.isfile, ref_images))
-        if len(ref_images) == 0:
-            raise Exception('%s is empty' % src_dir)
+        # ref_images = [os.path.join(src_dir, x) for x in os.listdir(src_dir)]
+        # self.ref_images = list(filter(os.path.isfile, ref_images))
+        # if len(ref_images) == 0:
+        #     raise Exception('%s is empty' % src_dir)
         
         self.styleGanGenerator = None
         self.styleGanDiscriminator = None
@@ -83,17 +86,35 @@ class StyleGanEncoding():
         self.s1 = self.s2 = None
 
     def normalInit(self):
-        self.makeModel()
+        self.initApp()
+        # self.makeModel()
         # self.startTraining()
-        self.playLatent(weights=[0.3,0.7])
+        # self.playLatent(weights=[0.3,0.7])
     
-    def makeModel(self):
+    def makeModels(self):
         self.broadcast({"log": "Making Models", "type": "replace", "logid": "makeModel"})
         self.encodeGen, self.styleGanGenerator, self.styleGanDiscriminator = self.getPretrainedStyleGanNetworks()
         self.perceptual_model = self.getPretrainedVGGPerceptualModel()
         self.dlatentGenerator = self.getPretrainedResnetModel()
         self.broadcast({"log": "Made Models", "type": "replace", "logid": "makeModel"})
         self.build()
+    
+    def initApp(self):
+        #First get all the temp raw images and send it to client to display
+        rawImgDir = "server\\temp\\raw_images"
+        self.sendImgDirToClient(rawImgDir, tag='raw_images')   
+
+    def sendImgDirToClient(self, img_dir, tag='raw_images'):
+        images_list = [x for x in os.listdir(img_dir)]
+        image_size = 256
+        self.broadcast({'action': 'resetReceivedImgs', 'tag':tag})
+        for img_name in images_list:
+            img_path = os.path.join(img_dir, img_name)
+            img = PIL.Image.open(img_path).convert('RGB')
+            if image_size is not None:
+                img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+            img = np.array(img)
+            self.broadcastImg(img, tag=tag, filename=img_name)
 
     #Use StyleGAN repo's dnnlib to download the stylegan model from url or cache if already downloaded
     def getPretrainedStyleGanNetworks(self):
@@ -141,7 +162,83 @@ class StyleGanEncoding():
         latent_vector = latent_vector.reshape((1, model_scale, 512))
         self.encodeGen.set_dlatents(latent_vector)
         return self.encodeGen.generate_images()[0]
+    
+    def alignImage(self, filename):
+        align_images.alignImageandSave(filename)
+        self.sendImgDirToClient(alignImgDir, tag='align_images')
+
+    def encodeImage(self, filename):
+        if self.encodeGen is None:
+            self.makeModels()
+        self.beginEncoding(filename)
+        
     #################################### TRAINING ##############################
+    def beginEncoding(self, filename, iterations=100):
+        latentPath = latentRepsDir + filename[:-4] + '.npy'
+        print("beginEncoding ", latentPath)
+        if os.path.exists(latentPath):
+            print('Already Encoded')
+            self.broadcast({"log": "Loaded from Saved"})
+            loadedLatent = np.load(latentPath)
+            self.encodeGen.set_dlatents(loadedLatent)
+            self.generateImgFromLatent(filename, inter_dlatent = loadedLatent)
+            return
+        #init losses
+        losses_graphs = self.getUpdatedLossGraphs()
+        self.resetLossHistory()
+        msg = {'action': "gotGraph", 'val': True}
+        self.broadcast(msg)
+
+        filePath = alignImgDir + filename
+        images_paths_batch = [filePath]
+        self.perceptual_model.set_reference_images(images_paths_batch)
+        resnet_input = preprocess_input(load_images(images_paths_batch,image_size=resnet_image_size))
+        self.curr_dlatents = self.dlatentGenerator.predict(resnet_input)
+        if self.curr_dlatents is not None:
+            self.encodeGen.set_dlatents(self.curr_dlatents)
+        self.broadcast({"log": "Generated Resnet Encoding", "type": "replace", "logid": "startEncoding"})
+        self.generateImgFromLatent(filename, inter_dlatent = self.curr_dlatents)
+
+        op = self.perceptual_model.optimize(self.encodeGen.dlatent_variable, iterations=iterations, use_optimizer='ggt')
+        pbar = tqdm(op, leave=False, total=iterations)
+        best_loss = None
+        best_dlatent = None
+        iterCount = 0
+        for loss_dict in pbar:
+            iterCount = iterCount + 1
+            if best_loss is None or loss_dict["loss"] < best_loss:
+                self.calculateLossHistory(loss_dict["loss"], loss_dict["lr"])
+                losses_graphs = self.getUpdatedLossGraphs()
+                self.broadcastLossHistoryFig(losses_graphs)
+
+                if best_dlatent is None:
+                    best_dlatent = self.encodeGen.get_dlatents()
+                else:
+                    best_dlatent = 0.25 * best_dlatent + 0.75 * self.encodeGen.get_dlatents()
+                self.encodeGen.set_dlatents(best_dlatent)
+                best_loss = loss_dict["loss"]
+                log = "Perpetual Loss Training (%d/%d)" % (iterCount, iterations)
+                self.broadcast({"log": log, "type": "replace", "logid": "perpetualLoss"})
+                self.generateImgFromLatent(filename, inter_dlatent = best_dlatent)
+        self.encodeGen.stochastic_clip_dlatents()
+        self.encodeGen.set_dlatents(best_dlatent)
+        self.generateImgFromLatent(filename, inter_dlatent = best_dlatent[0])
+        self.saveLatentVector(filename, best_dlatent)
+        log = "Perpetual Loss Training Finished!"
+        self.broadcast({"log": log, "type": "replace", "logid": "perpetualLoss"})
+
+    def saveLatentVector(self, filename, dlatent):
+        filename = filename[:-4]
+        print(filename)
+        np.save(os.path.join(latentRepsDir, f'{filename}.npy'), dlatent)
+
+    def generateImgFromLatent(self, filename, inter_dlatent=None):
+        img_size = 256
+        generated_images = self.encodeGen.generate_images()
+        img = PIL.Image.fromarray(generated_images[0], 'RGB')
+        img = img.resize((img_size,img_size),PIL.Image.LANCZOS)
+        self.broadcastImg(img, tag="encoded_images", filename=filename)
+        
     def resetLossHistory(self):
         self.loss_history = []
         self.lr_history = []
@@ -217,10 +314,14 @@ class StyleGanEncoding():
     ################### Thread Methods ###################################
     def doWork(self, msg):
         print("do work StyleGanEncoding", msg)
-        if msg['action'] == 'makeModel':
+        if msg['action'] == 'initApp':
+            self.initApp()
+        elif msg['action'] == 'makeModel':
             self.makeModel()
-        # elif msg['action'] == 'prepareData':
-        #     self.prepareData()
+        elif msg['action'] == 'alignImage':
+            self.alignImage(msg['filename'])
+        elif msg['action'] == 'encodeImage':
+            self.encodeImage(msg['filename'])
         elif msg['action'] == 'startTraining':
             self.startTraining()
         elif msg['action'] == 'playLatents':
@@ -230,6 +331,20 @@ class StyleGanEncoding():
     def broadcast(self, msg):
         msg["id"] = 1
         workerCls.broadcast_event(msg)
+
+    def broadcastImg(self, img, imgSize=256, tag='type', filename='filename'):
+        my_dpi = 96
+        img_size = (256,256)
+        fig = plt.figure(figsize=(imgSize/my_dpi, imgSize/my_dpi), dpi=my_dpi)
+        ax1 = fig.add_subplot(1,1,1)
+        ax1.set_xticks([])
+        ax1.set_yticks([])
+        ax1.imshow(img, cmap='plasma')
+        # plt.show()
+        mp_fig = mpld3.fig_to_dict(fig)
+        plt.close('all')
+        msg = {'action': 'sendImg', 'fig': mp_fig, 'tag': tag, 'filename': filename}
+        self.broadcast(msg)
 
     def broadcastTrainingImages(self, generatedImg):
         my_dpi = 96
@@ -314,6 +429,18 @@ def init(content):
     print('init')
     workerCls.clear()
 
+@socketio.on('alignImages')
+def alignImages(filename):
+    print(filename)
+    msg = {'id': 0, 'action': 'alignImage', 'filename': filename}
+    workerCls.broadcast_event(msg)
+
+@socketio.on('encodeImages')
+def alignImages(filename):
+    print(filename)
+    msg = {'id': 0, 'action': 'encodeImage', 'filename': filename}
+    workerCls.broadcast_event(msg)
+
 @socketio.on('beginTraining')
 def beginTraining():
     print('beginTraining')
@@ -323,12 +450,14 @@ def beginTraining():
     thread2 = workerCls.Worker(1, socketio=socketio)
     thread2.start()
 
-    msg = {'id': 0, 'action': 'makeModel'}
+    msg = {'id': 0, 'action': 'initApp'}
     workerCls.broadcast_event(msg)
+    # msg = {'id': 0, 'action': 'makeModel'}
+    # workerCls.broadcast_event(msg)
     # msg = {'id': 0, 'action': 'prepareData'}
     # workerCls.broadcast_event(msg)
-    msg = {'id': 0, 'action': 'startTraining'}
-    workerCls.broadcast_event(msg)
+    # msg = {'id': 0, 'action': 'startTraining'}
+    # workerCls.broadcast_event(msg)
 
 @socketio.on('playWithLatents')
 def playWithLatents(w0):

@@ -3,6 +3,21 @@
         <button :class="getConnectClass()" @click="connectSocket()"><i class="icon-magnet"></i></button>
         <div v-if="connected">
             <div class="p-2">
+                <div>raw_images</div>
+                <div>
+                    <img v-for="img in raw_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="alignImages(img.fn)"/>
+                </div>
+                <!-- <button @click="alignImages()"><i class="icon-cog"></i></button> -->
+            </div>
+            <div class="p-2">
+                <div>aligned_images</div>
+                <img v-for="img in aligned_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="encodeImages(img.fn)"/>
+            </div>
+            <div class="p-2">
+                <div>encoded_images</div>
+                <img v-for="img in encoded_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="onEncodeImgClick(img.fn)"/>
+            </div>
+            <div class="p-2">
                 <div>Init</div>
                 <hr>
                 <button @click="beginTraining()"><i class="icon-bolt"></i></button>
@@ -58,6 +73,9 @@ export default {
             generatedImgs: [],
             trainingImgs: [],
             //Latent
+            raw_images: [],
+            aligned_images: [],
+            encoded_images: [],
             initForPlay: false,
             gotGraph: false,
             latentW0: 0.7
@@ -118,7 +136,13 @@ export default {
             if(content.action) {
                 if(content.action == "sendModelsJson") {
                     this.showModels(content.modelsJson);
-                } else if(content.action == "sendRandomGeneratedFigs") {
+                } 
+                else if(content.action == "sendImg") {
+                    this.handleReceivedImg(content);
+                } else if(content.action == "resetReceivedImgs") {
+                    this.resetReceivedImgs(content);
+                }
+                else if(content.action == "sendRandomGeneratedFigs") {
                     this.showRandomGeneratedFigs(content.fig);
                 } else if(content.action == "sendCurrTrainingFigs") {
                     this.showCurrentTrainingFig(content.fig);
@@ -129,6 +153,33 @@ export default {
                 } else if(content.action == "gotGraph") {
                     this.gotGraph = content.val;
                 }
+            }
+        },
+        handleReceivedImg(content) {
+            if(content.tag == "raw_images") {
+                content.fig.axes.forEach(a => {
+                    this.raw_images.push({data: a.images[0].data, fn: content.filename});
+                });
+            } else if(content.tag == "align_images") {
+                content.fig.axes.forEach(a => {
+                    this.aligned_images.push({data: a.images[0].data, fn: content.filename});
+                });
+            } else if(content.tag == "encoded_images") {
+                content.fig.axes.forEach(a => {
+                    let foundImg = this.encoded_images.find(e => e.fn == content.filename)
+                    if(foundImg) {
+                        foundImg.data = a.images[0].data
+                    } else {
+                        this.encoded_images.push({data: a.images[0].data, fn: content.filename});
+                    }
+                });
+            }
+        },
+        resetReceivedImgs(content) {
+            if(content.tag == "raw_images") {
+                this.raw_images = [];
+            } else if(content.tag == "align_images") {
+                this.aligned_images = [];
             }
         },
         handleLogs(msg) {
@@ -151,6 +202,15 @@ export default {
         beginTraining() {
             this.models = []
             this.socket.emit('beginTraining');
+        },
+        alignImages(fn) {
+            this.socket.emit('alignImages', fn);
+        },
+        encodeImages(fn) {
+            this.socket.emit('encodeImages', fn);
+        },
+        onEncodeImgClick(fn) {
+
         },
         playLatents() {
             this.socket.emit('playWithLatents', this.latentW0);
