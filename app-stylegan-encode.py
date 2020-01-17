@@ -91,13 +91,14 @@ class StyleGanEncoding():
         # self.startTraining()
         # self.playLatent(weights=[0.3,0.7])
     
-    def makeModels(self):
+    def makeModels(self, loadPerpetual=False):
         self.broadcast({"log": "Making Models", "type": "replace", "logid": "makeModel"})
         self.encodeGen, self.styleGanGenerator, self.styleGanDiscriminator = self.getPretrainedStyleGanNetworks()
-        self.perceptual_model = self.getPretrainedVGGPerceptualModel()
-        self.dlatentGenerator = self.getPretrainedResnetModel()
+        if loadPerpetual:
+            self.perceptual_model = self.getPretrainedVGGPerceptualModel()
+            self.dlatentGenerator = self.getPretrainedResnetModel()
+            self.build()
         self.broadcast({"log": "Made Models", "type": "replace", "logid": "makeModel"})
-        self.build()
     
     def initApp(self):
         #First get all the temp raw images and send it to client to display
@@ -142,10 +143,12 @@ class StyleGanEncoding():
         self.perceptual_model.build_perceptual_model(self.encodeGen, self.styleGanDiscriminator)
         print("built perc model to train")
     
-    def playLatent(self, weights=[0.3,0.7]):
-        if(self.s1 == None):
-            s1 = np.load('latent_rep/photo1.npy')
-            s2 = np.load('latent_rep/photo2.npy')
+    def playLatent(self, weights=[0.3,0.7], images=[]):
+        latentPath1 = latentRepsDir + images[0][:-4] + '.npy'
+        latentPath2 = latentRepsDir + images[1][:-4] + '.npy'
+        if os.path.exists(latentPath1):
+            s1 = np.load(latentPath1)
+            s2 = np.load(latentPath2)
             s1 = np.expand_dims(s1,axis=0)
             s2 = np.expand_dims(s2,axis=0)
         mixedLatent = weights[0]*s1 + weights[1]*s2
@@ -164,13 +167,23 @@ class StyleGanEncoding():
         return self.encodeGen.generate_images()[0]
     
     def alignImage(self, filename):
-        align_images.alignImageandSave(filename)
+        # align_images.alignImageandSave(filename)
         self.sendImgDirToClient(alignImgDir, tag='align_images')
 
     def encodeImage(self, filename):
         if self.encodeGen is None:
-            self.makeModels()
+            isLoadPerc = self.checkIfEncodingExists(filename)
+            isLoadPerc = not isLoadPerc
+            self.makeModels(loadPerpetual=isLoadPerc)
         self.beginEncoding(filename)
+    
+    def checkIfEncodingExists(self, filename):
+        latentPath = latentRepsDir + filename[:-4] + '.npy'
+        print("beginEncoding ", latentPath)
+        if os.path.exists(latentPath):
+            print('Already Encoded')
+            return True
+        return False
         
     #################################### TRAINING ##############################
     def beginEncoding(self, filename, iterations=100):
@@ -229,7 +242,6 @@ class StyleGanEncoding():
 
     def saveLatentVector(self, filename, dlatent):
         filename = filename[:-4]
-        print(filename)
         np.save(os.path.join(latentRepsDir, f'{filename}.npy'), dlatent)
 
     def generateImgFromLatent(self, filename, inter_dlatent=None):
@@ -325,8 +337,10 @@ class StyleGanEncoding():
         elif msg['action'] == 'startTraining':
             self.startTraining()
         elif msg['action'] == 'playLatents':
-            weights = [float(msg['w0']), 1-float(msg['w0'])]
-            self.playLatent(weights=weights)
+            # print(msg['input'])
+            w0 = msg['input']['latentWs']
+            weights = [float(w0), 1-float(w0)]
+            self.playLatent(weights=weights, images= msg['input']['images'])
 
     def broadcast(self, msg):
         msg["id"] = 1
@@ -360,31 +374,6 @@ class StyleGanEncoding():
         msg = {'action': 'sendCurrTrainingFigs', 'fig': mp_fig}
         self.broadcast(msg)
 
-    def broadcastGeneratedImages(self, const_test_noise=None):
-        if const_test_noise is None:
-            test_noise = np.random.randn(8, 128).astype(np.float32)
-        else:
-            test_noise = const_test_noise
-        gen_imgs = self.generator.predict(test_noise)
-        gen_imgs = tf.clip_by_value(gen_imgs, clip_value_min=0, clip_value_max=1)
-        gen_imgs = tf.image.resize(gen_imgs, [128,128], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-        newImg = gen_imgs[0]
-        for i in range(1,8):
-            newImg = np.concatenate((newImg, gen_imgs[i]), axis=1)
-        my_dpi = 96
-        img_size = (128*8,128)
-        fig = plt.figure(figsize=(img_size[0]/my_dpi, img_size[1]/my_dpi), dpi=my_dpi)
-        ax = fig.add_subplot(1,1,1)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        # ax.set_title(title[i])
-        ax.imshow(newImg, cmap='plasma')
-        mp_fig = mpld3.fig_to_dict(fig)
-        plt.close('all')
-        msg = {'action': 'sendRandomGeneratedFigs', 'fig': mp_fig}
-        self.broadcast(msg)
-        # plt.imsave('results/const.png',newImg)
-    
     def broadcastLossHistoryFig(self, losses, stepGap=1):
         n_graphs = len(losses)
         fig = plt.figure(figsize=(4*n_graphs,4))
@@ -460,8 +449,8 @@ def beginTraining():
     # workerCls.broadcast_event(msg)
 
 @socketio.on('playWithLatents')
-def playWithLatents(w0):
-    msg = {'id': 0, 'action': 'playLatents', 'w0': w0}
+def playWithLatents(selectedInp):
+    msg = {'id': 0, 'action': 'playLatents', 'input': selectedInp}
     workerCls.broadcast_event(msg)
 
 def testInit():

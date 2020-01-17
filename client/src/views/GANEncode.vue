@@ -15,7 +15,12 @@
             </div>
             <div class="p-2">
                 <div>encoded_images</div>
-                <img v-for="img in encoded_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="onEncodeImgClick(img.fn)"/>
+                <img v-for="img in encoded_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="onEncodeImgClick(img)"/>
+            </div>
+            <div class="p-2">
+                <div>selected_images</div>
+                <img v-for="img in selected_images" v-bind:src="'data:image/jpeg;base64,'+img.data"/>
+                <button @click="clearSelected()">Clear</button>
             </div>
             <div class="p-2">
                 <div>Init</div>
@@ -36,7 +41,7 @@
                 </div>
                 <button @click="playLatents()"><i class="icon-youtube-play"></i></button>
             </div>
-
+            
             <div class="p-2">
                 <img v-for="i in generatedImgs" v-bind:src="'data:image/jpeg;base64,'+i" />
             </div>
@@ -76,6 +81,7 @@ export default {
             raw_images: [],
             aligned_images: [],
             encoded_images: [],
+            selected_images: [],
             initForPlay: false,
             gotGraph: false,
             latentW0: 0.7
@@ -209,15 +215,28 @@ export default {
         encodeImages(fn) {
             this.socket.emit('encodeImages', fn);
         },
-        onEncodeImgClick(fn) {
-
+        onEncodeImgClick(img) {
+            if(this.selected_images.length < 2) {
+                this.selected_images.push(img);
+            }
+            if(this.selected_images.length == 2) {
+                this.initForPlay = true;
+            }
+        },
+        clearSelected() {
+            this.selected_images = [];
         },
         playLatents() {
-            this.socket.emit('playWithLatents', this.latentW0);
+            let imgNames = this.selected_images.map(si => si.fn);
+            
+            let msg = {"images": imgNames, "latentWs": this.latentW0}
+            this.socket.emit('playWithLatents',msg);
         },
         changeWeights() {
-            console.log(this.latentW0);
-            this.socket.emit('playWithLatents', this.latentW0);
+            let imgNames = this.selected_images.map(si => si.fn);
+            
+            let msg = {"images": imgNames, "latentWs": this.latentW0}
+            this.socket.emit('playWithLatents', msg);
         },
         // showModels(models) {
         //     models.forEach(m => {
