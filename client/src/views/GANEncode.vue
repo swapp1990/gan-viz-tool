@@ -126,6 +126,8 @@ export default {
                     this.showGraph(content.fig);
                 } else if(content.action == "initForPlay") {
                     this.initForPlay = content.val;
+                } else if(content.action == "gotGraph") {
+                    this.gotGraph = content.val;
                 }
             }
         },

@@ -148,11 +148,11 @@ class StyleGanEncoding():
 
     def startTraining(self):
         self.broadcast({"log": "Started Training", "type": "replace", "logid": "startTraining"})
+        msg = {'action': "gotGraph", 'val': True}
+        self.broadcast(msg)
         self.trainPerceptualLoss()
         self.broadcast({"log": "Finished Training", "type": "replace", "logid": "startTraining"})
         msg = {'action': 'initForPlay', 'val': True}
-        self.broadcast(msg)
-        msg = {'action': 'gotGraph', 'val': True}
         self.broadcast(msg)
 
     def trainPerceptualLoss(self):
