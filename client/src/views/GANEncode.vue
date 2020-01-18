@@ -3,34 +3,42 @@
         <button :class="getConnectClass()" @click="connectSocket()"><i class="icon-magnet"></i></button>
         <div v-if="connected">
             <div class="p-2">
-                <div>raw_images</div>
-                <div>
-                    <img v-for="img in raw_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="alignImages(img.fn)"/>
-                </div>
-                <!-- <button @click="alignImages()"><i class="icon-cog"></i></button> -->
-            </div>
-            <div class="p-2">
-                <div>aligned_images</div>
-                <img v-for="img in aligned_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="encodeImages(img.fn)"/>
-            </div>
-            <div class="p-2">
-                <div>encoded_images</div>
-                <img v-for="img in encoded_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="onEncodeImgClick(img)"/>
-            </div>
-            <div class="p-2">
-                <div>selected_images</div>
-                <img v-for="img in selected_images" v-bind:src="'data:image/jpeg;base64,'+img.data"/>
-                <button @click="clearSelected()">Clear</button>
-            </div>
-            <div class="p-2">
-                <div>Init</div>
                 <hr>
-                <button @click="beginTraining()"><i class="icon-bolt"></i></button>
+                <div>Init</div>
+                <button @click="initApp()"><i class="icon-bolt"></i></button>
                 <div class="p-1">
                     <div v-for="l in logs">{{l.log}}</div>
                 </div>
                 <hr>
             </div>
+            <div v-if="!alreadyEncoded">
+                <div class="p-2">
+                    <div>raw_images</div>
+                    <div>
+                        <img v-for="img in raw_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="alignImages(img.fn)"/>
+                    </div>
+                    <!-- <button @click="alignImages()"><i class="icon-cog"></i></button> -->
+                </div>
+                <div class="p-2">
+                    <div>aligned_images</div>
+                        <img v-for="img in aligned_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="encodeImages(img.fn)"/>
+                    </div>
+                </div>
+            </div>
+            <div v-if="alreadyEncoded">
+                <div>Encoding</div>
+                <div class="p-2">
+                    <div>encoded_images</div>
+                    <img v-for="img in encoded_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="onEncodeImgClick(img)"/>
+                </div>
+                <div class="p-2">
+                    <div>selected_images</div>
+                    <img v-for="img in selected_images" v-bind:src="'data:image/jpeg;base64,'+img.data"/>
+                    <button @click="clearSelected()">Clear</button>
+                </div>
+                <hr>
+            </div>
+        
             <div v-if="initForPlay" class="p-2">
                 <div>Play With Latents</div>
                 <hr>
@@ -84,6 +92,7 @@ export default {
             selected_images: [],
             initForPlay: false,
             gotGraph: false,
+            alreadyEncoded: true,
             latentW0: 0.7
         }
     },
@@ -205,9 +214,9 @@ export default {
             }
         },
         // GAN TOol
-        beginTraining() {
-            this.models = []
-            this.socket.emit('beginTraining');
+        initApp() {
+            let msg = {"alreadyEncoded": this.alreadyEncoded};
+            this.socket.emit('initApp', msg);
         },
         alignImages(fn) {
             this.socket.emit('alignImages', fn);

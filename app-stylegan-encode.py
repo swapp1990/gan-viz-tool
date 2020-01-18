@@ -100,10 +100,15 @@ class StyleGanEncoding():
             self.build()
         self.broadcast({"log": "Made Models", "type": "replace", "logid": "makeModel"})
     
-    def initApp(self):
-        #First get all the temp raw images and send it to client to display
-        rawImgDir = "server\\temp\\raw_images"
-        self.sendImgDirToClient(rawImgDir, tag='raw_images')   
+    def initApp(self, config):
+        print(config)
+        if(config['alreadyEncoded']):
+            self.makeModels(loadPerpetual=False)
+            self.sendSavedEncodingsToClient()
+        else:
+            #First get all the temp raw images and send it to client to display
+            rawImgDir = "server\\temp\\raw_images"
+            self.sendImgDirToClient(rawImgDir, tag='raw_images')
 
     def sendImgDirToClient(self, img_dir, tag='raw_images'):
         images_list = [x for x in os.listdir(img_dir)]
@@ -117,6 +122,12 @@ class StyleGanEncoding():
             img = np.array(img)
             self.broadcastImg(img, tag=tag, filename=img_name)
 
+    def sendSavedEncodingsToClient(self):
+        encoding_list = [x for x in os.listdir(latentRepsDir)]
+        print("%d saved encodings found" % (len(encoding_list)))
+        for enc_path in encoding_list:
+            self.sendEncodingFromFile(enc_path)
+            
     #Use StyleGAN repo's dnnlib to download the stylegan model from url or cache if already downloaded
     def getPretrainedStyleGanNetworks(self):
         tflib.init_tf()
@@ -186,6 +197,14 @@ class StyleGanEncoding():
         return False
         
     #################################### TRAINING ##############################
+    def sendEncodingFromFile(self, filename):
+        latentPath = latentRepsDir + filename
+        if os.path.exists(latentPath):
+            loadedLatent = np.load(latentPath)
+            self.encodeGen.set_dlatents(loadedLatent)
+            img = self.generateImgFromLatent(filename, inter_dlatent = loadedLatent)
+            self.broadcastImg(img, tag="encoded_images", filename=filename)
+
     def beginEncoding(self, filename, iterations=100):
         latentPath = latentRepsDir + filename[:-4] + '.npy'
         print("beginEncoding ", latentPath)
@@ -194,7 +213,8 @@ class StyleGanEncoding():
             self.broadcast({"log": "Loaded from Saved"})
             loadedLatent = np.load(latentPath)
             self.encodeGen.set_dlatents(loadedLatent)
-            self.generateImgFromLatent(filename, inter_dlatent = loadedLatent)
+            img = self.generateImgFromLatent(filename, inter_dlatent = loadedLatent)
+            self.broadcastImg(img, tag="encoded_images", filename=filename)
             return
         #init losses
         losses_graphs = self.getUpdatedLossGraphs()
@@ -210,13 +230,16 @@ class StyleGanEncoding():
         if self.curr_dlatents is not None:
             self.encodeGen.set_dlatents(self.curr_dlatents)
         self.broadcast({"log": "Generated Resnet Encoding", "type": "replace", "logid": "startEncoding"})
-        self.generateImgFromLatent(filename, inter_dlatent = self.curr_dlatents)
+
+        img = self.generateImgFromLatent(filename, inter_dlatent = self.curr_dlatents)
+        self.broadcastImg(img, tag="encoded_images", filename=filename)
 
         op = self.perceptual_model.optimize(self.encodeGen.dlatent_variable, iterations=iterations, use_optimizer='ggt')
         pbar = tqdm(op, leave=False, total=iterations)
         best_loss = None
         best_dlatent = None
         iterCount = 0
+
         for loss_dict in pbar:
             iterCount = iterCount + 1
             if best_loss is None or loss_dict["loss"] < best_loss:
@@ -232,10 +255,15 @@ class StyleGanEncoding():
                 best_loss = loss_dict["loss"]
                 log = "Perpetual Loss Training (%d/%d)" % (iterCount, iterations)
                 self.broadcast({"log": log, "type": "replace", "logid": "perpetualLoss"})
-                self.generateImgFromLatent(filename, inter_dlatent = best_dlatent)
+                img = self.generateImgFromLatent(filename, inter_dlatent = best_dlatent)
+                self.broadcastImg(img, tag="encoded_images", filename=filename)
+
         self.encodeGen.stochastic_clip_dlatents()
         self.encodeGen.set_dlatents(best_dlatent)
-        self.generateImgFromLatent(filename, inter_dlatent = best_dlatent[0])
+
+        img = self.generateImgFromLatent(filename, inter_dlatent = best_dlatent[0])
+        self.broadcastImg(img, tag="encoded_images", filename=filename)
+
         self.saveLatentVector(filename, best_dlatent)
         log = "Perpetual Loss Training Finished!"
         self.broadcast({"log": log, "type": "replace", "logid": "perpetualLoss"})
@@ -249,7 +277,7 @@ class StyleGanEncoding():
         generated_images = self.encodeGen.generate_images()
         img = PIL.Image.fromarray(generated_images[0], 'RGB')
         img = img.resize((img_size,img_size),PIL.Image.LANCZOS)
-        self.broadcastImg(img, tag="encoded_images", filename=filename)
+        return img
         
     def resetLossHistory(self):
         self.loss_history = []
@@ -327,7 +355,7 @@ class StyleGanEncoding():
     def doWork(self, msg):
         print("do work StyleGanEncoding", msg)
         if msg['action'] == 'initApp':
-            self.initApp()
+            self.initApp(msg['config'])
         elif msg['action'] == 'makeModel':
             self.makeModel()
         elif msg['action'] == 'alignImage':
@@ -418,6 +446,24 @@ def init(content):
     print('init')
     workerCls.clear()
 
+@socketio.on('initApp')
+def initApp(config):
+    print('initApp')
+    stylegan_encode = StyleGanEncoding()
+    threadG = workerCls.Worker(0, stylegan_encode, socketio=socketio)
+    threadG.start()
+    thread2 = workerCls.Worker(1, socketio=socketio)
+    thread2.start()
+
+    msg = {'id': 0, 'action': 'initApp', 'config': config}
+    workerCls.broadcast_event(msg)
+    # msg = {'id': 0, 'action': 'makeModel'}
+    # workerCls.broadcast_event(msg)
+    # msg = {'id': 0, 'action': 'prepareData'}
+    # workerCls.broadcast_event(msg)
+    # msg = {'id': 0, 'action': 'startTraining'}
+    # workerCls.broadcast_event(msg)
+
 @socketio.on('alignImages')
 def alignImages(filename):
     print(filename)
@@ -429,24 +475,6 @@ def alignImages(filename):
     print(filename)
     msg = {'id': 0, 'action': 'encodeImage', 'filename': filename}
     workerCls.broadcast_event(msg)
-
-@socketio.on('beginTraining')
-def beginTraining():
-    print('beginTraining')
-    stylegan_encode = StyleGanEncoding()
-    threadG = workerCls.Worker(0, stylegan_encode, socketio=socketio)
-    threadG.start()
-    thread2 = workerCls.Worker(1, socketio=socketio)
-    thread2.start()
-
-    msg = {'id': 0, 'action': 'initApp'}
-    workerCls.broadcast_event(msg)
-    # msg = {'id': 0, 'action': 'makeModel'}
-    # workerCls.broadcast_event(msg)
-    # msg = {'id': 0, 'action': 'prepareData'}
-    # workerCls.broadcast_event(msg)
-    # msg = {'id': 0, 'action': 'startTraining'}
-    # workerCls.broadcast_event(msg)
 
 @socketio.on('playWithLatents')
 def playWithLatents(selectedInp):
