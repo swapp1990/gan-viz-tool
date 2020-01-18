@@ -38,7 +38,29 @@
                 </div>
                 <hr>
             </div>
-        
+            <div class="p-2">
+                <div>Attributes</div>
+                <div>
+                    <div v-for="a in attrNames">
+                        <input  type="radio" :value="a.type" v-model="selectedAttr">
+                        <label>{{a.type}}</label>
+                        <div v-for="f in a.factors" class="pl-2">
+                            <input  type="radio" :value="f" v-model="selectedFactor">
+                            <label class="pl-1">{{f}}</label>
+                        </div>
+                    </div>
+                    <span>Picked: {{ selectedAttr }}: {{selectedFactor}}</span>
+                </div>
+                <div>
+                    <button @click="loadAttributes()"><i class="icon-bolt"></i></button>
+                </div>
+                <div v-if="dirVecFound">
+                    <button @click="generateImgWithDir()"><i class="icon-instagram"></i></button>
+                    <input type="range" id="customRange1" min="-5" max="5" step="0.5"
+                    v-on:change="changeCoeff()" v-model="dirVecCoeff">
+                    <span class="ml-3">Coeff: {{dirVecCoeff}}</span>
+                </div>
+            </div>
             <div v-if="initForPlay" class="p-2">
                 <div>Play With Latents</div>
                 <hr>
@@ -91,9 +113,17 @@ export default {
             encoded_images: [],
             selected_images: [],
             initForPlay: false,
+            dirVecFound: true,
             gotGraph: false,
             alreadyEncoded: true,
-            latentW0: 0.7
+            latentW0: 0.7,
+            dirVecCoeff: -2.5,
+            attrNames: [
+                {'type': 'age', 'factors': ['<15', '15-25', '25-35']}, 
+                {'type': 'gender', 'factors': ['male', 'female']}
+            ],
+            selectedAttr: 'gender',
+            selectedFactor: 'male'
         }
     },
     mounted(){
@@ -223,6 +253,20 @@ export default {
         },
         encodeImages(fn) {
             this.socket.emit('encodeImages', fn);
+        },
+        loadAttributes() {
+            let msg = {'type': this.selectedAttr, 'factor': this.selectedFactor};
+            this.socket.emit('loadAttributes', msg);
+        },
+        generateImgWithDir() {
+            let imgNames = this.selected_images.map(si => si.fn);
+            let msg = {"images": imgNames, "coeff": this.dirVecCoeff}
+            this.socket.emit('generateImgWithDir', msg);
+        },
+        changeCoeff() {
+            let imgNames = this.selected_images.map(si => si.fn);
+            let msg = {"images": imgNames, "coeff": this.dirVecCoeff}
+            this.socket.emit('generateImgWithDir', msg);
         },
         onEncodeImgClick(img) {
             if(this.selected_images.length < 2) {

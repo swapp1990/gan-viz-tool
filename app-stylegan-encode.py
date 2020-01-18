@@ -23,7 +23,7 @@ from flask_socketio import SocketIO, emit
 import mpld3
 from skimage.transform import resize
 import seaborn as sns; sns.set()
-
+import gzip
 #my classes
 from server.threads import Worker as workerCls
 import align_images
@@ -45,15 +45,18 @@ from keras.models import load_model
 from encoder.generator_model import Generator
 from encoder.perceptual_model import PerceptualModel, load_images
 from keras.applications.resnet50 import preprocess_input
+from sklearn.linear_model import LogisticRegression, SGDClassifier
 
 alignImgDir = "server\\temp\\aligned_images\\"
 encodeImgDir = "server\\temp\\encoded_images\\"
 latentRepsDir = "server\\temp\\latent_reps\\"
+latentAttrDir = "server\\temp\\latent_attr\\"
 generated_images_dir = "generated_images/"
 decay_steps = 4
 iterations = 100
 pt_stylegan_model_url = 'https://drive.google.com/uc?id=1MEGjdvVpUsu1jB4zrXZN7Y4kBBOzizDQ' # karras2019stylegan-ffhq-1024x1024.pkl
 pt_vgg_perceptual_model_url = 'https://drive.google.com/uc?id=1N2-m9qszOeVC9Tq77WxsLnuWwOedQiD2'
+LATENT_TRAINING_DATA = 'https://drive.google.com/uc?id=1xMM3AFq0r014IIhBLiMCjKJJvbhLUQ9t'
 cache_dir = 'cache/'
 pt_resnet_local_path = cache_dir + 'finetuned_resnet.h5'
 batch_size = 1
@@ -79,6 +82,7 @@ class StyleGanEncoding():
         self.encodeGen = None
         self.perceptual_model = None
         self.dlatentGenerator = None
+        self.attrDirVec = None
 
         self.curr_dlatents = None
         self.loss_history = []
@@ -86,10 +90,10 @@ class StyleGanEncoding():
         self.s1 = self.s2 = None
 
     def normalInit(self):
-        self.initApp()
-        # self.makeModel()
-        # self.startTraining()
+        # self.initApp()
+        self.makeModels()
         # self.playLatent(weights=[0.3,0.7])
+        self.loadAttributes()
     
     def makeModels(self, loadPerpetual=False):
         self.broadcast({"log": "Making Models", "type": "replace", "logid": "makeModel"})
@@ -127,7 +131,7 @@ class StyleGanEncoding():
         print("%d saved encodings found" % (len(encoding_list)))
         for enc_path in encoding_list:
             self.sendEncodingFromFile(enc_path)
-            
+
     #Use StyleGAN repo's dnnlib to download the stylegan model from url or cache if already downloaded
     def getPretrainedStyleGanNetworks(self):
         tflib.init_tf()
@@ -351,6 +355,61 @@ class StyleGanEncoding():
             self.loss_history.append(6*i)
             self.lr_history.append(3.4*i)
             self.broadcastLossHistoryFig(losses_graphs)
+    
+    ##################### Get attribute latent directions ######################
+    def loadAttributes(self, config):
+        print('loadAttributes ', config)
+        with dnnlib.util.open_url(LATENT_TRAINING_DATA, cache_dir=cache_dir) as f:
+            qlatent_data, dlatent_data, labels_data = pickle.load(gzip.GzipFile(fileobj=f))
+
+        X_data = dlatent_data.reshape((-1, 18*512))
+        # Let's play with config type ['age' or 'gender']
+        # print(X_data.shape) #(20307, 9216)
+        
+        attr_type = config['type']
+        attr_factor = config['factor']
+        if attr_type == 'age':
+            if attr_factor == '<15':
+                attr_factor = int(15)
+            elif attr_factor == '15-25':
+                attr_factor = int(20)
+            elif attr_factor == '25-35':
+                attr_factor = int(30)
+        attr_dirn_filename = attr_type + "_" + str(attr_factor)
+        attr_latent_path = latentAttrDir + attr_dirn_filename + '.npy'
+        if os.path.exists(attr_latent_path):
+            self.attrDirVec = np.load(attr_latent_path)
+            logMsg = "Loaded %s Direction Vector from cache" % (attr_type)
+            self.broadcast({"log": logMsg})
+        else:
+            y_data = np.array([x['faceAttributes'][attr_type] == attr_factor for x in labels_data])
+            assert(len(X_data) == len(y_data))
+            logMsg = "Performing regression on %s Direction on Sample Data" % (attr_type)
+            self.broadcast({"log": logMsg})
+            clf = LogisticRegression(class_weight='balanced')
+            clf.fit(X_data.reshape((-1, 18*512)), y_data)
+            self.broadcast({"log": "Regression Done successfully and found the direction vector"})
+            self.attrDirVec = clf.coef_.reshape((18, 512))
+            np.save(os.path.join(latentAttrDir, f'{attr_dirn_filename}.npy'), self.attrDirVec)
+    
+    def generateImg_withAttrDirVec(self, filename, coeff=-1.5):
+        #Generate orig image using the 'filename'.npy latent vector file
+        latentPath1 = latentRepsDir + filename[:-4] + '.npy'
+        img_size = 512
+        if os.path.exists(latentPath1):
+            origLatent = np.load(latentPath1)
+            #Move the latent towards the direction of the attribute using the 'coeff' value
+            new_latent_vector = origLatent.copy()
+            new_latent_vector[:8] = (origLatent + coeff*self.attrDirVec)[:8]
+            new_latent_vector = new_latent_vector.reshape((1,18, 512))
+            self.encodeGen.set_dlatents(new_latent_vector)
+            img_arr = self.encodeGen.generate_images()[0]
+            img = PIL.Image.fromarray(img_arr, 'RGB')
+            img = img.resize((img_size,img_size),PIL.Image.LANCZOS)
+            # gen_img = saveGeneratedImages(img_array, 'LatentMix', img_size=512)
+            self.broadcastTrainingImages(img)
+            # plt.imshow(img)
+            # plt.show()
     ################### Thread Methods ###################################
     def doWork(self, msg):
         print("do work StyleGanEncoding", msg)
@@ -369,6 +428,11 @@ class StyleGanEncoding():
             w0 = msg['input']['latentWs']
             weights = [float(w0), 1-float(w0)]
             self.playLatent(weights=weights, images= msg['input']['images'])
+        elif msg['action'] == 'loadAttributes':
+            self.loadAttributes(msg['config'])
+        elif msg['action'] == 'generateImgWithDir':
+            coeff = float(msg['coeff'])
+            self.generateImg_withAttrDirVec(msg['filename'], coeff=coeff)
 
     def broadcast(self, msg):
         msg["id"] = 1
@@ -429,6 +493,23 @@ class StyleGanEncoding():
         # currMean = statistics.mean(self.gen_lh)
         # self.mean_gen_lh.append(currMean)
 
+def generate_image(latent_vector, generator):
+    latent_vector = latent_vector.reshape((1,18, 512))
+    generator.set_dlatents(latent_vector)
+    img_arr = generator.generate_images()[0]
+    img = PIL.Image.fromarray(img_arr, 'RGB')
+    return img.resize((256,256))
+
+def move_and_show(latent_vector, direction, coeffs, gen):
+    fig,ax = plt.subplots(1, len(coeffs), figsize=(15, 10), dpi=80)
+    for i, coeff in enumerate(coeffs):
+        new_latent_vector = latent_vector.copy()
+        new_latent_vector[:8] = (latent_vector + coeff*direction)[:8]
+        ax[i].imshow(generate_image(new_latent_vector, gen))
+        ax[i].set_title('Coeff: %0.1f' % coeff)
+    [x.axis('off') for x in ax]
+    plt.show()
+
 def split_to_batches(l, n):
     for i in range(0, len(l), n):
         yield l[i:i + n]
@@ -479,6 +560,17 @@ def alignImages(filename):
 @socketio.on('playWithLatents')
 def playWithLatents(selectedInp):
     msg = {'id': 0, 'action': 'playLatents', 'input': selectedInp}
+    workerCls.broadcast_event(msg)
+
+@socketio.on('loadAttributes')
+def loadAttributes(msg):
+    msg = {'id': 0, 'action': 'loadAttributes', 'config': msg}
+    workerCls.broadcast_event(msg)
+
+@socketio.on('generateImgWithDir')
+def generateImgWithDir(msg):
+    # print(msg['images'])
+    msg = {'id': 0, 'action': 'generateImgWithDir', 'filename': msg['images'][0], 'coeff': msg['coeff']}
     workerCls.broadcast_event(msg)
 
 def testInit():
