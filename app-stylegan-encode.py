@@ -89,11 +89,18 @@ class StyleGanEncoding():
         self.lr_history = []
         self.s1 = self.s2 = None
 
+        #style mixing
+        self.src_dlatents_w_seeds = []
+        self.dst_dlatents_w_seeds = []
+
     def normalInit(self):
         # self.initApp()
-        self.makeModels()
+        # self.makeModels()
         # self.playLatent(weights=[0.3,0.7])
-        self.loadAttributes()
+        # self.loadAttributes()
+        # self.drawFigures()
+        self.loadStyleMixing()
+        self.performStyleMixing()
     
     def makeModels(self, loadPerpetual=False):
         self.broadcast({"log": "Making Models", "type": "replace", "logid": "makeModel"})
@@ -357,11 +364,14 @@ class StyleGanEncoding():
             self.broadcastLossHistoryFig(losses_graphs)
     
     ##################### Get attribute latent directions ######################
-    def loadAttributes(self, config):
+    def loadAttributes(self, config=None):
         print('loadAttributes ', config)
+        
         with dnnlib.util.open_url(LATENT_TRAINING_DATA, cache_dir=cache_dir) as f:
             qlatent_data, dlatent_data, labels_data = pickle.load(gzip.GzipFile(fileobj=f))
-
+        if config is None:
+            print(labels_data[0])
+            return
         X_data = dlatent_data.reshape((-1, 18*512))
         # Let's play with config type ['age' or 'gender']
         # print(X_data.shape) #(20307, 9216)
@@ -375,6 +385,8 @@ class StyleGanEncoding():
                 attr_factor = int(20)
             elif attr_factor == '25-35':
                 attr_factor = int(30)
+        if attr_type == 'hair':
+            attr_factor = 'bald'
         attr_dirn_filename = attr_type + "_" + str(attr_factor)
         attr_latent_path = latentAttrDir + attr_dirn_filename + '.npy'
         if os.path.exists(attr_latent_path):
@@ -382,7 +394,12 @@ class StyleGanEncoding():
             logMsg = "Loaded %s Direction Vector from cache" % (attr_type)
             self.broadcast({"log": logMsg})
         else:
-            y_data = np.array([x['faceAttributes'][attr_type] == attr_factor for x in labels_data])
+            if attr_type != 'hair' and attr_type != 'emotion':
+                y_data = np.array([x['faceAttributes'][attr_type] == attr_factor for x in labels_data])
+            elif attr_type == 'hair':
+                y_data = np.array([x['faceAttributes'][attr_type]['bald'] > 0.8 for x in labels_data])
+            elif attr_type == 'emotion':
+                y_data = np.array([x['faceAttributes'][attr_type][attr_factor] > 0.8 for x in labels_data])
             assert(len(X_data) == len(y_data))
             logMsg = "Performing regression on %s Direction on Sample Data" % (attr_type)
             self.broadcast({"log": logMsg})
@@ -410,6 +427,123 @@ class StyleGanEncoding():
             self.broadcastTrainingImages(img)
             # plt.imshow(img)
             # plt.show()
+   
+    def drawFigures(self):
+        tflib.init_tf()
+        with dnnlib.util.open_url(pt_stylegan_model_url, cache_dir=cache_dir) as f:
+            _G, _D, Gs = pickle.load(f)
+        
+        synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
+        #Uncurated results
+        # lods=[0,1,2,2,3,3]
+        # rows = 3
+        # cols = 3
+        # seed=5
+        # latents = np.random.RandomState(seed).randn(sum(rows * 2**lod for lod in lods), Gs.input_shape[1])
+        # images = Gs.run(latents, None, **synthesis_kwargs) # [seed, y, x, rgb]
+        # self.showImagesAsGrid(images)
+
+        #Style Mixing
+        src_seeds=[639,701,687,615,2268] 
+        dst_seeds=[888,829,1898,1733,1614,845]
+        style_ranges=[range(0,4)]*3+[range(4,8)]*2+[range(8,18)]
+        src_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in src_seeds)
+        dst_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in dst_seeds)
+        src_dlatents = Gs.components.mapping.run(src_latents, None) # [seed, layer, component]
+        dst_dlatents = Gs.components.mapping.run(dst_latents, None) # [seed, layer, component]
+        src_images = Gs.components.synthesis.run(src_dlatents, randomize_noise=False, **synthesis_kwargs)
+        dst_images = Gs.components.synthesis.run(dst_dlatents, randomize_noise=False, **synthesis_kwargs)
+
+        canvas = PIL.Image.new('RGB', (1024 * (len(src_seeds) + 1), 1024 * (len(dst_seeds) + 1)), 'white')
+        for col, src_image in enumerate(list(src_images)):
+            canvas.paste(PIL.Image.fromarray(src_image, 'RGB'), ((col + 1) * 1024, 0))
+        for row, dst_image in enumerate(list(dst_images)):
+            canvas.paste(PIL.Image.fromarray(dst_image, 'RGB'), (0, (row + 1) * 1024))
+            row_dlatents = np.stack([dst_dlatents[row]] * len(src_seeds))
+            row_dlatents[:, style_ranges[row]] = src_dlatents[:, style_ranges[row]]
+            row_images = Gs.components.synthesis.run(row_dlatents, randomize_noise=False, **synthesis_kwargs)
+            for col, image in enumerate(list(row_images)):
+                canvas.paste(PIL.Image.fromarray(image, 'RGB'), ((col + 1) * 1024, (row + 1) * 1024))
+        plt.imshow(canvas)
+        plt.grid(False)
+        plt.axis('off')
+        plt.show()
+
+    def showImagesAsGrid(self, images):
+        canvas = PIL.Image.new('RGB', (256 * 3, 256 * 3), 'white')
+        image_iter = iter(list(images))
+        for i in range(0,256*3,256):
+            for j in range(0,256*3,256):
+                image = PIL.Image.fromarray(next(image_iter), 'RGB')
+                # image = image.crop((cx, cy, cx + cw, cy + ch))
+                image = image.resize((256, 256), PIL.Image.ANTIALIAS)
+                canvas.paste(image, (i, j))
+        plt.imshow(canvas)
+        plt.grid(False)
+        plt.axis('off')
+        plt.show()
+    
+    ##################### Style Mixing ######################
+    def loadStyleMixing(self, config=None):
+        if self.encodeGen is None:
+            self.makeModels()
+            Gs = self.styleGanGenerator
+            # tflib.init_tf()
+            # with dnnlib.util.open_url(pt_stylegan_model_url, cache_dir=cache_dir) as f:
+            #     _G, _D, Gs = pickle.load(f)
+        synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
+        src_seeds=[639,701,687,615,2268] 
+        dst_seeds=[888,829,1898,1733,1614]
+        src_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in src_seeds)
+        dst_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in dst_seeds)
+        src_dlatents = Gs.components.mapping.run(src_latents, None) # [seed, layer, component]
+        dst_dlatents = Gs.components.mapping.run(dst_latents, None) # [seed, layer, component]
+        src_images = Gs.components.synthesis.run(src_dlatents, randomize_noise=False, **synthesis_kwargs)
+        dst_images = Gs.components.synthesis.run(dst_dlatents, randomize_noise=False, **synthesis_kwargs)
+
+        image_size=256
+        for seed,img in zip(src_seeds, src_images):
+            img = PIL.Image.fromarray(img, 'RGB')
+            img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+            self.broadcastImg(img, tag="src_images", filename=seed)
+        for seed,img in zip(dst_seeds, dst_images):
+            img = PIL.Image.fromarray(img, 'RGB')
+            img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+            self.broadcastImg(img, tag="dest_images", filename=seed)
+        
+        self.src_dlatents_w_seeds = [{'seed':a, 'dlatent':b} for a,b in zip(src_seeds, src_dlatents)]
+        self.dst_dlatents_w_seeds = [{'seed':a, 'dlatent':b} for a,b in zip(dst_seeds, dst_dlatents)]
+
+    def performStyleMixing(self, config=None):
+        if self.styleGanGenerator is not None:
+            Gs = self.styleGanGenerator
+        print('performStyleMixing ', config)
+        synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
+        style_ranges=[range(0,4)]*3+[range(4,8)]*2+[range(8,18)]
+        # print(len(style_ranges), style_ranges[0], style_ranges[3], style_ranges[5])
+        row = 0
+        src_seed = int(config['src'])
+        dst_seed = int(config['dest'])
+        src_dlatent_dict = next((item for item in self.src_dlatents_w_seeds if item["seed"] == src_seed), None)
+        if src_dlatent_dict is not None:
+            src_dlatent = src_dlatent_dict['dlatent']
+        dst_dlatent_dict = next((item for item in self.dst_dlatents_w_seeds if item["seed"] == dst_seed), None)
+        if dst_dlatent_dict is not None:
+            dst_dlatent = dst_dlatent_dict['dlatent']
+        # print(dst_dlatent.shape, src_dlatent.shape)
+
+        #Mix the src and dst dlatents according to the layers specified
+        mixed_dlatent = dst_dlatent
+        mixed_dlatent[style_ranges[row]] = src_dlatent[style_ranges[row]]
+        #Expand dlatent shape [18,512] => [1,18,512] to match Gs required shape
+        mixed_dlatent = np.stack([mixed_dlatent * 1])
+        row_images = Gs.components.synthesis.run(mixed_dlatent, randomize_noise=False, **synthesis_kwargs)
+        img = PIL.Image.fromarray(row_images[0], 'RGB')
+        image_size = 512
+        img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+        self.broadcastTrainingImages(img)
+        # plt.imshow(img)
+        # plt.show()
     ################### Thread Methods ###################################
     def doWork(self, msg):
         print("do work StyleGanEncoding", msg)
@@ -433,6 +567,10 @@ class StyleGanEncoding():
         elif msg['action'] == 'generateImgWithDir':
             coeff = float(msg['coeff'])
             self.generateImg_withAttrDirVec(msg['filename'], coeff=coeff)
+        elif msg['action'] == 'loadStyleMixing':
+            self.loadStyleMixing(msg['config'])
+        elif msg['action'] == 'performStyleMixing':
+            self.performStyleMixing(msg['config'])
 
     def broadcast(self, msg):
         msg["id"] = 1
@@ -536,8 +674,8 @@ def initApp(config):
     thread2 = workerCls.Worker(1, socketio=socketio)
     thread2.start()
 
-    msg = {'id': 0, 'action': 'initApp', 'config': config}
-    workerCls.broadcast_event(msg)
+    # msg = {'id': 0, 'action': 'initApp', 'config': config}
+    # workerCls.broadcast_event(msg)
     # msg = {'id': 0, 'action': 'makeModel'}
     # workerCls.broadcast_event(msg)
     # msg = {'id': 0, 'action': 'prepareData'}
@@ -565,6 +703,16 @@ def playWithLatents(selectedInp):
 @socketio.on('loadAttributes')
 def loadAttributes(msg):
     msg = {'id': 0, 'action': 'loadAttributes', 'config': msg}
+    workerCls.broadcast_event(msg)
+
+@socketio.on('loadStyleMixing')
+def loadAttributes(msg):
+    msg = {'id': 0, 'action': 'loadStyleMixing', 'config': msg}
+    workerCls.broadcast_event(msg)
+
+@socketio.on('performStyleMixing')
+def loadAttributes(msg):
+    msg = {'id': 0, 'action': 'performStyleMixing', 'config': msg}
     workerCls.broadcast_event(msg)
 
 @socketio.on('generateImgWithDir')

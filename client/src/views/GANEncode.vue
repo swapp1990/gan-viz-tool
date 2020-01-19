@@ -38,7 +38,7 @@
                 </div>
                 <hr>
             </div>
-            <div class="p-2">
+            <div v-if="initForAttributePlay" class="p-2">
                 <div>Attributes</div>
                 <div>
                     <div v-for="a in attrNames">
@@ -71,7 +71,21 @@
                 </div>
                 <button @click="playLatents()"><i class="icon-youtube-play"></i></button>
             </div>
-            
+            <div v-if="initForStyleMixing" class="p-2">
+                <div>Play With StyleMixing</div>
+                <div class="p-2">
+                    <button @click="loadStyleMixing()"><i class="icon-bolt"></i></button>
+                </div>
+                <div class="p-2">
+                    <div>src_images</div>
+                    <img v-for="img in src_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="onSrcImgClick(img)" :class="getImgClass(img)"/>
+                </div>
+                <div class="p-2">
+                    <div>dest_images</div>
+                    <img v-for="img in dest_images" v-bind:src="'data:image/jpeg;base64,'+img.data" @click="onDestImgClick(img)" :class="getImgClass(img)"/>
+                </div>
+                
+            </div>
             <div class="p-2">
                 <img v-for="i in generatedImgs" v-bind:src="'data:image/jpeg;base64,'+i" />
             </div>
@@ -113,6 +127,8 @@ export default {
             encoded_images: [],
             selected_images: [],
             initForPlay: false,
+            initForAttributePlay: false,
+            initForStyleMixing: true,
             dirVecFound: true,
             gotGraph: false,
             alreadyEncoded: true,
@@ -120,10 +136,18 @@ export default {
             dirVecCoeff: -2.5,
             attrNames: [
                 {'type': 'age', 'factors': ['<15', '15-25', '25-35']}, 
-                {'type': 'gender', 'factors': ['male', 'female']}
+                {'type': 'gender', 'factors': ['male', 'female']},
+                {'type': 'hair', 'factors': ['bald']},
+                {'type': 'emotion', 'factors': ['anger', 'sadness', 'contempt', 'fear']}
             ],
             selectedAttr: 'gender',
-            selectedFactor: 'male'
+            selectedFactor: 'male',
+            //Style Mixing
+            src_images: [],
+            dest_images: [],
+            selected_src: null,
+            selected_dest: null,
+            styleMixingClasses: []
         }
     },
     mounted(){
@@ -216,6 +240,24 @@ export default {
                         foundImg.data = a.images[0].data
                     } else {
                         this.encoded_images.push({data: a.images[0].data, fn: content.filename});
+                    }
+                });
+            } else if(content.tag == "src_images") {
+                content.fig.axes.forEach(a => {
+                    let foundImg = this.src_images.find(e => e.fn == content.filename)
+                    if(foundImg) {
+                        foundImg.data = a.images[0].data
+                    } else {
+                        this.src_images.push({data: a.images[0].data, seed: content.filename});
+                    }
+                });
+            } else if(content.tag == "dest_images") {
+                content.fig.axes.forEach(a => {
+                    let foundImg = this.dest_images.find(e => e.fn == content.filename)
+                    if(foundImg) {
+                        foundImg.data = a.images[0].data
+                    } else {
+                        this.dest_images.push({data: a.images[0].data, seed: content.filename});
                     }
                 });
             }
@@ -315,9 +357,54 @@ export default {
             var graph1 = $(mlpId);
             graph1.html(imgData);
         },
+        loadStyleMixing() {
+            let config = {};
+            this.socket.emit('loadStyleMixing', config);
+        },
+        resetSrcImgs() {
+            this.src_images.forEach(img => {
+                img.clicked = false;
+            });
+        },
+        resetDestImgs() {
+            this.dest_images.forEach(img => {
+                img.clicked = false;
+            });
+        },
+        onSrcImgClick(imgW) {
+            // console.log(imgW);
+            this.selected_src = imgW.seed;
+            this.resetSrcImgs();
+            imgW.clicked = true;
+            if(this.selected_dest != null) {
+                let config = {src: this.selected_src, dest: this.selected_dest};
+                this.socket.emit('performStyleMixing', config);
+            }
+        },
+        onDestImgClick(imgW) {
+            // console.log(imgW);
+            this.selected_dest = imgW.seed;
+            this.resetDestImgs();
+            imgW.clicked = true;
+            if(this.selected_src != null) {
+                let config = {src: this.selected_src, dest: this.selected_dest};
+                this.socket.emit('performStyleMixing', config);
+            }
+        },
+        getImgClass(imgW) {
+            let imgClasses = [];
+            // console.log(imgW);
+            if(imgW.clicked) {
+               imgClasses.push("selectedImg");
+            }
+            return imgClasses;
+        }
     }
 }
 </script>
-<style lang="stylus" scoped>
-
+<style scoped>
+    .selectedImg {
+        border: 3px solid brown;
+        border-radius: 4px;
+    }
 </style>
