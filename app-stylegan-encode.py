@@ -99,8 +99,9 @@ class StyleGanEncoding():
         # self.playLatent(weights=[0.3,0.7])
         # self.loadAttributes()
         # self.drawFigures()
-        self.loadStyleMixing()
-        self.performStyleMixing()
+        # self.loadStyleMixing()
+        # self.performStyleMixing()
+        self.loadNoiseMixer()
     
     def makeModels(self, loadPerpetual=False):
         self.broadcast({"log": "Making Models", "type": "replace", "logid": "makeModel"})
@@ -433,6 +434,8 @@ class StyleGanEncoding():
         with dnnlib.util.open_url(pt_stylegan_model_url, cache_dir=cache_dir) as f:
             _G, _D, Gs = pickle.load(f)
         
+        w=1024 
+        h=1024
         synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
         #Uncurated results
         # lods=[0,1,2,2,3,3]
@@ -444,30 +447,75 @@ class StyleGanEncoding():
         # self.showImagesAsGrid(images)
 
         #Style Mixing
-        src_seeds=[639,701,687,615,2268] 
-        dst_seeds=[888,829,1898,1733,1614,845]
-        style_ranges=[range(0,4)]*3+[range(4,8)]*2+[range(8,18)]
-        src_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in src_seeds)
-        dst_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in dst_seeds)
-        src_dlatents = Gs.components.mapping.run(src_latents, None) # [seed, layer, component]
-        dst_dlatents = Gs.components.mapping.run(dst_latents, None) # [seed, layer, component]
-        src_images = Gs.components.synthesis.run(src_dlatents, randomize_noise=False, **synthesis_kwargs)
-        dst_images = Gs.components.synthesis.run(dst_dlatents, randomize_noise=False, **synthesis_kwargs)
+        # src_seeds=[639,701,687,615,2268] 
+        # dst_seeds=[888,829,1898,1733,1614,845]
+        # style_ranges=[range(0,4)]*3+[range(4,8)]*2+[range(8,18)]
+        # src_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in src_seeds)
+        # dst_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in dst_seeds)
+        # src_dlatents = Gs.components.mapping.run(src_latents, None) # [seed, layer, component]
+        # dst_dlatents = Gs.components.mapping.run(dst_latents, None) # [seed, layer, component]
+        # src_images = Gs.components.synthesis.run(src_dlatents, randomize_noise=False, **synthesis_kwargs)
+        # dst_images = Gs.components.synthesis.run(dst_dlatents, randomize_noise=False, **synthesis_kwargs)
 
-        canvas = PIL.Image.new('RGB', (1024 * (len(src_seeds) + 1), 1024 * (len(dst_seeds) + 1)), 'white')
-        for col, src_image in enumerate(list(src_images)):
-            canvas.paste(PIL.Image.fromarray(src_image, 'RGB'), ((col + 1) * 1024, 0))
-        for row, dst_image in enumerate(list(dst_images)):
-            canvas.paste(PIL.Image.fromarray(dst_image, 'RGB'), (0, (row + 1) * 1024))
-            row_dlatents = np.stack([dst_dlatents[row]] * len(src_seeds))
-            row_dlatents[:, style_ranges[row]] = src_dlatents[:, style_ranges[row]]
-            row_images = Gs.components.synthesis.run(row_dlatents, randomize_noise=False, **synthesis_kwargs)
-            for col, image in enumerate(list(row_images)):
-                canvas.paste(PIL.Image.fromarray(image, 'RGB'), ((col + 1) * 1024, (row + 1) * 1024))
-        plt.imshow(canvas)
-        plt.grid(False)
-        plt.axis('off')
-        plt.show()
+        # canvas = PIL.Image.new('RGB', (1024 * (len(src_seeds) + 1), 1024 * (len(dst_seeds) + 1)), 'white')
+        # for col, src_image in enumerate(list(src_images)):
+        #     canvas.paste(PIL.Image.fromarray(src_image, 'RGB'), ((col + 1) * 1024, 0))
+        # for row, dst_image in enumerate(list(dst_images)):
+        #     canvas.paste(PIL.Image.fromarray(dst_image, 'RGB'), (0, (row + 1) * 1024))
+        #     row_dlatents = np.stack([dst_dlatents[row]] * len(src_seeds))
+        #     row_dlatents[:, style_ranges[row]] = src_dlatents[:, style_ranges[row]]
+        #     row_images = Gs.components.synthesis.run(row_dlatents, randomize_noise=False, **synthesis_kwargs)
+        #     for col, image in enumerate(list(row_images)):
+        #         canvas.paste(PIL.Image.fromarray(image, 'RGB'), ((col + 1) * 1024, (row + 1) * 1024))
+        # plt.imshow(canvas)
+        # plt.grid(False)
+        # plt.axis('off')
+        # plt.show()
+
+        #Noise detail
+
+        # seeds=[1157,1012]
+        # num_samples=100
+        # canvas = PIL.Image.new('RGB', (w * 3, h * len(seeds)), 'white')
+        # for row, seed in enumerate(seeds):
+        #     latents = np.stack([np.random.RandomState(seed).randn(Gs.input_shape[1])] * num_samples)
+        #     images = Gs.run(latents, None, truncation_psi=1, **synthesis_kwargs)
+        #     canvas.paste(PIL.Image.fromarray(images[0], 'RGB'), (0, row * h))
+        #     for i in range(4):
+        #         crop = PIL.Image.fromarray(images[i + 1], 'RGB')
+        #         crop = crop.crop((650, 180, 906, 436))
+        #         crop = crop.resize((w//2, h//2), PIL.Image.NEAREST)
+        #         canvas.paste(crop, (w + (i%2) * w//2, row * h + (i//2) * h//2))
+        #     diff = np.std(np.mean(images, axis=3), axis=0) * 4
+        #     diff = np.clip(diff + 0.5, 0, 255).astype(np.uint8)
+        #     canvas.paste(PIL.Image.fromarray(diff, 'L'), (w * 2, row * h))
+        # plt.imshow(canvas)
+        # plt.grid(False)
+        # plt.axis('off')
+        # plt.show()
+
+        #Noise components
+        seeds=[1967,1555]
+        flips=[1]
+        noise_ranges=[range(0, 18), range(0, 0), range(8, 18), range(0, 8)]
+        Gsc = Gs.clone()
+        noise_vars = [var for name, var in Gsc.components.synthesis.vars.items() if name.startswith('noise')]
+        noise_pairs = list(zip(noise_vars, tflib.run(noise_vars))) # [(var, val), ...]
+        latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in seeds)
+        all_images = []
+        for noise_range in noise_ranges:
+            tflib.set_vars({var: val * (1 if i in noise_range else 0) for i, (var, val) in enumerate(noise_pairs)})
+            range_images = Gsc.run(latents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
+            range_images[flips, :, :] = range_images[flips, :, ::-1]
+            all_images.append(list(range_images))
+        
+        canvas = PIL.Image.new('RGB', (w * 2, h * 2), 'white')
+        for col, col_images in enumerate(zip(*all_images)):
+            canvas.paste(PIL.Image.fromarray(col_images[0], 'RGB').crop((0, 0, w//2, h)), (col * w, 0))
+            canvas.paste(PIL.Image.fromarray(col_images[1], 'RGB').crop((w//2, 0, w, h)), (col * w + w//2, 0))
+            canvas.paste(PIL.Image.fromarray(col_images[2], 'RGB').crop((0, 0, w//2, h)), (col * w, h))
+            canvas.paste(PIL.Image.fromarray(col_images[3], 'RGB').crop((w//2, 0, w, h)), (col * w + w//2, h))
+        canvas.save("noiseComp.png")
 
     def showImagesAsGrid(self, images):
         canvas = PIL.Image.new('RGB', (256 * 3, 256 * 3), 'white')
@@ -488,12 +536,12 @@ class StyleGanEncoding():
         if self.encodeGen is None:
             self.makeModels()
             Gs = self.styleGanGenerator
-            # tflib.init_tf()
-            # with dnnlib.util.open_url(pt_stylegan_model_url, cache_dir=cache_dir) as f:
-            #     _G, _D, Gs = pickle.load(f)
         synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
-        src_seeds=[639,701,687,615,2268] 
-        dst_seeds=[888,829,1898,1733,1614]
+        # src_seeds=[639,701,687,615,2268] 
+        # dst_seeds=[888,829,1898,1733,1614]
+        src_seeds = np.random.randint(low=1, high=3000, size=(5)).tolist()
+        dst_seeds = np.random.randint(low=1, high=3000, size=(5)).tolist()
+        print(src_seeds, dst_seeds)
         src_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in src_seeds)
         dst_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in dst_seeds)
         src_dlatents = Gs.components.mapping.run(src_latents, None) # [seed, layer, component]
@@ -544,6 +592,38 @@ class StyleGanEncoding():
         self.broadcastTrainingImages(img)
         # plt.imshow(img)
         # plt.show()
+    
+    def loadNoiseMixer(self, config=None):
+        print("loadNoiseMixer ", config)
+        seed = 1967
+        if self.styleGanGenerator is None:
+            self.makeModels()
+        Gs = self.styleGanGenerator
+
+        # for name, var in Gs.components.synthesis.vars.items():
+        #     if name.startswith('noise'):
+        #         print(var.shape)
+        # for name, var in Gs.components.mapping.vars.items():
+        #     print(name, var.shape)
+        synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
+        Gsc = Gs.clone()
+        noise_vars = [var for name, var in Gsc.components.synthesis.vars.items() if name.startswith('noise')]
+        noise_pairs = list(zip(noise_vars, tflib.run(noise_vars))) # [(var, val), ...]
+
+        seeds = [seed]
+        zlatents = np.stack(np.random.RandomState(seed).randn(Gsc.input_shape[1]) for seed in seeds)
+        minL = int(config['minLayer'])
+        maxL = int(config['maxLayer'])
+        layers_with_noise = range(minL,maxL)
+        # noise_range = range(0, 8)
+        tflib.set_vars({var: val * (1 if i in layers_with_noise else 0) for i, (var, val) in enumerate(noise_pairs)})
+        range_images = Gsc.run(zlatents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
+        img = PIL.Image.fromarray(range_images[0], 'RGB')
+        image_size = 1024
+        img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+        self.broadcastTrainingImages(img)
+        # plt.imshow(img)
+        # plt.show()
     ################### Thread Methods ###################################
     def doWork(self, msg):
         # print("do work StyleGanEncoding", msg)
@@ -571,6 +651,8 @@ class StyleGanEncoding():
             self.loadStyleMixing(msg['config'])
         elif msg['action'] == 'performStyleMixing':
             self.performStyleMixing(msg['config'])
+        elif msg['action'] == 'loadNoiseMixer':
+            self.loadNoiseMixer(msg['config'])
 
     def broadcast(self, msg):
         msg["id"] = 1
@@ -708,6 +790,11 @@ def loadAttributes(msg):
 @socketio.on('loadStyleMixing')
 def loadAttributes(msg):
     msg = {'id': 0, 'action': 'loadStyleMixing', 'config': msg}
+    workerCls.broadcast_event(msg)
+
+@socketio.on('loadNoiseMixer')
+def loadAttributes(msg):
+    msg = {'id': 0, 'action': 'loadNoiseMixer', 'config': msg}
     workerCls.broadcast_event(msg)
 
 @socketio.on('performStyleMixing')

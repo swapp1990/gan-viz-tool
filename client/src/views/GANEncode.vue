@@ -25,7 +25,7 @@
                     </div>
                 </div>
             </div>
-            <div v-if="alreadyEncoded">
+            <div v-if="!alreadyEncoded">
                 <div>Encoding</div>
                 <div class="p-2">
                     <div>encoded_images</div>
@@ -91,6 +91,18 @@
                 </div>
                 
             </div>
+            <div v-if="initForNoisePlay" class="p-2">
+                <div>Play With Noise</div>
+                <div class="p-2">
+                    <button @click="loadNoiseMixer()"><i class="icon-bolt"></i></button>
+                    <div class="range-slider">
+                        <span>Fix DLatent Layers from {{minRange}} to {{maxRange}}</span><br>
+                        <input @change="changeLayerMixRange" v-model.number="minRange" min="0" max="18" step="1" type="range" />
+                        <input @change="changeLayerMixRange" v-model.number="maxRange" min="0" max="18" step="1" type="range" />
+                    </div>
+                </div>
+            </div>
+            
             <div class="p-2">
                 <img v-for="i in generatedImgs" v-bind:src="'data:image/jpeg;base64,'+i" />
             </div>
@@ -117,8 +129,6 @@ export default {
     },
     data() {
         return {
-            minRange: "0",
-            maxRange: "4",
             //socket
             connected: false,
             socket: null,
@@ -135,7 +145,8 @@ export default {
             selected_images: [],
             initForPlay: false,
             initForAttributePlay: false,
-            initForStyleMixing: true,
+            initForStyleMixing: false,
+            initForNoisePlay: true,
             dirVecFound: true,
             gotGraph: false,
             alreadyEncoded: true,
@@ -154,7 +165,11 @@ export default {
             dest_images: [],
             selected_src: null,
             selected_dest: null,
-            styleMixingClasses: []
+            styleMixingClasses: [],
+            minRange: "0",
+            maxRange: "4",
+            //Noise Mixing
+
         }
     },
     mounted(){
@@ -368,6 +383,10 @@ export default {
             let config = {};
             this.socket.emit('loadStyleMixing', config);
         },
+        loadNoiseMixer() {
+            let config = {minLayer: this.minRange, maxLayer: this.maxRange};
+            this.socket.emit('loadNoiseMixer', config);
+        },
         resetSrcImgs() {
             this.src_images.forEach(img => {
                 img.clicked = false;
@@ -416,10 +435,12 @@ export default {
                 this.maxPrice = this.minPrice;
                 this.minPrice = tmp;
             }
-            if(this.selected_src != null && this.selected_dest != null) {
-                let config = this.getStyleMixingConfig();
-                this.socket.emit('performStyleMixing', config);
-            }
+            // if(this.selected_src != null && this.selected_dest != null) {
+            //     let config = this.getStyleMixingConfig();
+            //     this.socket.emit('performStyleMixing', config);
+            // }
+            let config = {minLayer: this.minRange, maxLayer: this.maxRange};
+            this.socket.emit('loadNoiseMixer', config);
         },
     }
 }
