@@ -75,6 +75,11 @@
                 <div>Play With StyleMixing</div>
                 <div class="p-2">
                     <button @click="loadStyleMixing()"><i class="icon-bolt"></i></button>
+                    <div class="range-slider">
+                        <span>Fix DLatent Layers from {{minRange}} to {{maxRange}}</span><br>
+                        <input @change="changeLayerMixRange" v-model.number="minRange" min="0" max="18" step="1" type="range" />
+                        <input @change="changeLayerMixRange" v-model.number="maxRange" min="0" max="18" step="1" type="range" />
+                    </div>
                 </div>
                 <div class="p-2">
                     <div>src_images</div>
@@ -112,6 +117,8 @@ export default {
     },
     data() {
         return {
+            minRange: "0",
+            maxRange: "4",
             //socket
             connected: false,
             socket: null,
@@ -371,13 +378,17 @@ export default {
                 img.clicked = false;
             });
         },
+        getStyleMixingConfig() {
+            let config = {src: this.selected_src, dest: this.selected_dest, minLayer: this.minRange, maxLayer: this.maxRange};
+            return config;
+        },
         onSrcImgClick(imgW) {
             // console.log(imgW);
             this.selected_src = imgW.seed;
             this.resetSrcImgs();
             imgW.clicked = true;
             if(this.selected_dest != null) {
-                let config = {src: this.selected_src, dest: this.selected_dest};
+                let config = this.getStyleMixingConfig();
                 this.socket.emit('performStyleMixing', config);
             }
         },
@@ -387,7 +398,7 @@ export default {
             this.resetDestImgs();
             imgW.clicked = true;
             if(this.selected_src != null) {
-                let config = {src: this.selected_src, dest: this.selected_dest};
+                let config = this.getStyleMixingConfig();
                 this.socket.emit('performStyleMixing', config);
             }
         },
@@ -398,7 +409,18 @@ export default {
                imgClasses.push("selectedImg");
             }
             return imgClasses;
-        }
+        },
+        changeLayerMixRange: function() {
+            if (this.minPrice > this.maxPrice) {
+                var tmp = this.maxPrice;
+                this.maxPrice = this.minPrice;
+                this.minPrice = tmp;
+            }
+            if(this.selected_src != null && this.selected_dest != null) {
+                let config = this.getStyleMixingConfig();
+                this.socket.emit('performStyleMixing', config);
+            }
+        },
     }
 }
 </script>
@@ -406,5 +428,10 @@ export default {
     .selectedImg {
         border: 3px solid brown;
         border-radius: 4px;
+    }
+    .range-slider {
+        width: 300px;
+        text-align: center;
+        position: relative;
     }
 </style>

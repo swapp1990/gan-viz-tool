@@ -519,9 +519,9 @@ class StyleGanEncoding():
             Gs = self.styleGanGenerator
         print('performStyleMixing ', config)
         synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
-        style_ranges=[range(0,4)]*3+[range(4,8)]*2+[range(8,18)]
-        # print(len(style_ranges), style_ranges[0], style_ranges[3], style_ranges[5])
-        row = 0
+        minL = int(config['minLayer'])
+        maxL = int(config['maxLayer'])
+        layers_to_mix = range(minL,maxL)
         src_seed = int(config['src'])
         dst_seed = int(config['dest'])
         src_dlatent_dict = next((item for item in self.src_dlatents_w_seeds if item["seed"] == src_seed), None)
@@ -533,8 +533,8 @@ class StyleGanEncoding():
         # print(dst_dlatent.shape, src_dlatent.shape)
 
         #Mix the src and dst dlatents according to the layers specified
-        mixed_dlatent = dst_dlatent
-        mixed_dlatent[style_ranges[row]] = src_dlatent[style_ranges[row]]
+        mixed_dlatent = dst_dlatent.copy()
+        mixed_dlatent[layers_to_mix] = src_dlatent[layers_to_mix]
         #Expand dlatent shape [18,512] => [1,18,512] to match Gs required shape
         mixed_dlatent = np.stack([mixed_dlatent * 1])
         row_images = Gs.components.synthesis.run(mixed_dlatent, randomize_noise=False, **synthesis_kwargs)
@@ -546,7 +546,7 @@ class StyleGanEncoding():
         # plt.show()
     ################### Thread Methods ###################################
     def doWork(self, msg):
-        print("do work StyleGanEncoding", msg)
+        # print("do work StyleGanEncoding", msg)
         if msg['action'] == 'initApp':
             self.initApp(msg['config'])
         elif msg['action'] == 'makeModel':
