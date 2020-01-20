@@ -101,7 +101,7 @@ class StyleGanEncoding():
         # self.drawFigures()
         # self.loadStyleMixing()
         # self.performStyleMixing()
-        self.loadNoiseMixer()
+        self.loadNoiseMixer(config={'minLayer': '0', 'maxLayer': 15})
     
     def makeModels(self, loadPerpetual=False):
         self.broadcast({"log": "Making Models", "type": "replace", "logid": "makeModel"})
@@ -612,18 +612,76 @@ class StyleGanEncoding():
 
         seeds = [seed]
         zlatents = np.stack(np.random.RandomState(seed).randn(Gsc.input_shape[1]) for seed in seeds)
-        minL = int(config['minLayer'])
-        maxL = int(config['maxLayer'])
-        layers_with_noise = range(minL,maxL)
+        # minL = int(config['minLayer'])
+        # maxL = int(config['maxLayer'])
+        # layers_with_noise = range(minL,maxL)
+        #4 long curly, #6 mid curly, #8 short curly 10 wavy+curly hair, 12 - dotted
+        layers_with_noise = [6,8,10]
         # noise_range = range(0, 8)
-        tflib.set_vars({var: val * (1 if i in layers_with_noise else 0) for i, (var, val) in enumerate(noise_pairs)})
-        range_images = Gsc.run(zlatents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
-        img = PIL.Image.fromarray(range_images[0], 'RGB')
-        image_size = 1024
-        img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
-        self.broadcastTrainingImages(img)
-        # plt.imshow(img)
-        # plt.show()
+        image_size = 256
+
+        ######################### Var dict way ####################
+        # var_dict = {}
+        # for i, (var, val) in enumerate(noise_pairs):
+        #     if i not in layers_with_noise:
+        #         scale = 0
+        #         val = val * scale
+        #     else:
+        #         scale = 1
+        #         # if i == 8:
+        #         #     scale = 0.2
+        #         val = val * scale
+        #     var_dict[var] = val
+        # tflib.set_vars(var_dict)
+        # range_images = Gsc.run(zlatents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
+        # img = PIL.Image.fromarray(range_images[0], 'RGB')
+        # img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+        #########################
+        all_images = []
+        allPrevNoise = []
+        for j in range(0,18):
+            dict_var = {var: val * (1 if i == j else 0) for i, (var, val) in enumerate(noise_pairs)}
+            allPrevNoise.append(dict_var)
+            tflib.set_vars(dict_var)
+            range_images = Gsc.run(zlatents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
+            img = PIL.Image.fromarray(range_images[0], 'RGB')
+            img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+            all_images.append(img)
+        self.saveImgWithAllNoise(all_images, filename="baby.png")
+        # self.broadcastTrainingImages(img)
+        seed = 1967
+        print("doing caren")
+        Gsc2 = Gs.clone()
+        noise_vars = [var for name, var in Gsc2.components.synthesis.vars.items() if name.startswith('noise')]
+        noise_pairs = list(zip(noise_vars, tflib.run(noise_vars))) # [(var, val), ...]
+        seeds = [seed]
+        zlatents = np.stack(np.random.RandomState(seed).randn(Gsc2.input_shape[1]) for seed in seeds)
+        all_images = []
+        for j in range(0,18):
+            var_dict = {}
+            for i, (var, val) in enumerate(noise_pairs):
+                # var_dict[var] = val * (1 if i == j else 0)
+                # var_dict[var] = allPrevNoise[j].get(var)
+                if j == 0:
+                    print(allPrevNoise[j])
+            # tflib.set_vars(var_dict)
+
+            # dict_var = {var: val * (1 if i == j else 0) for i, (var, val) in enumerate(noise_pairs)}
+            # tflib.set_vars(dict_var)
+
+            range_images = Gsc2.run(zlatents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
+            img = PIL.Image.fromarray(range_images[0], 'RGB')
+            img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+            all_images.append(img)
+
+        # self.saveImgWithAllNoise(all_images, filename="baby.png")
+        self.saveImgWithAllNoise(all_images, filename="caren.png")
+
+    def saveImgWithAllNoise(self, all_images, image_size=256, filename="const.png"):
+        canvas = PIL.Image.new('RGB', (image_size*18, image_size), 'white')
+        for i in range(18):
+            canvas.paste(all_images[i], (i*image_size,0))
+        canvas.save(filename)
     ################### Thread Methods ###################################
     def doWork(self, msg):
         # print("do work StyleGanEncoding", msg)
@@ -814,5 +872,5 @@ def testInit():
 
 if __name__ == "__main__":
     print("running socketio")
-    # testInit()
-    socketio.run(app)
+    testInit()
+    # socketio.run(app)
