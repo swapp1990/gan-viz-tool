@@ -134,3 +134,7 @@ ffhq_dataset/latent_directions/
 ffhq_dataset/latent_representations/
 server/temp/
 music/
+samples.png
+trained.png
+trained2.png
+output/

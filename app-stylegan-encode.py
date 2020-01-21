@@ -11,6 +11,7 @@ import sys
 import logging
 import statistics
 import numpy as np
+import tensorflow as tf
 from matplotlib import pyplot as plt
 import pickle
 import PIL.Image
@@ -56,7 +57,8 @@ latentAttrDir = "server\\temp\\latent_attr\\"
 generated_images_dir = "generated_images/"
 decay_steps = 4
 iterations = 100
-pt_stylegan_model_url = 'https://drive.google.com/uc?id=1MEGjdvVpUsu1jB4zrXZN7Y4kBBOzizDQ' # karras2019stylegan-ffhq-1024x1024.pkl
+# pt_stylegan_model_url = 'https://drive.google.com/uc?id=1MEGjdvVpUsu1jB4zrXZN7Y4kBBOzizDQ' # karras2019stylegan-ffhq-1024x1024.pkl
+pt_stylegan_model_url = 'https://drive.google.com/uc?id=1MJ6iCfNtMIRicihwRorsM3b7mmtmK9c3' #Cars
 pt_vgg_perceptual_model_url = 'https://drive.google.com/uc?id=1N2-m9qszOeVC9Tq77WxsLnuWwOedQiD2'
 LATENT_TRAINING_DATA = 'https://drive.google.com/uc?id=1xMM3AFq0r014IIhBLiMCjKJJvbhLUQ9t'
 cache_dir = 'cache/'
@@ -101,11 +103,197 @@ class StyleGanEncoding():
         # self.playLatent(weights=[0.3,0.7])
         # self.loadAttributes()
         # self.drawFigures()
-        self.loadStyleMixing()
+        # self.loadStyleMixing()
         # self.performStyleMixing()
         # self.loadNoiseMixer(config={'minLayer': '0', 'maxLayer': 15})
         # self.testMusicEncoding()
+        self.ganSteer()
     
+    ##################################### Gan Steer ##############################################
+    def ganSteer(self):
+        tflib.init_tf()
+        with dnnlib.util.open_url(pt_stylegan_model_url, cache_dir=cache_dir) as f:
+            _G, _D, Gs = pickle.load(f)
+        Nsliders = 3 # we use 3 slider dimensions for RGB color
+
+        dim_z = Gs.input_shape[1]
+
+        # get original generated output
+        z = tf.placeholder(tf.float32, shape=(None, dim_z))
+        outputs_orig = tf.transpose(Gs.get_output_for(z, None, is_validation=True, 
+                                                    randomize_noise=True), [0, 2, 3, 1])
+
+        img_size = outputs_orig.shape[1]
+        Nchannels = outputs_orig.shape[3]
+
+        # set target placeholders
+        target = tf.placeholder(tf.float32, shape=(None, img_size, img_size, Nchannels))
+        mask = tf.placeholder(tf.float32, shape=(None, img_size, img_size, Nchannels))
+
+        # forward to W latent space
+        out_dlatents = Gs.components.mapping.get_output_for(z, None) #out_dlatents shape: [?, 16, 512]
+
+        # set slider and learnable walk vector
+        latent_dim = out_dlatents.shape
+        alpha = tf.placeholder(tf.float32, shape=(None, Nsliders), name="alpha_slider")
+        w = tf.Variable(np.random.normal(0.0, 0.1, [1, latent_dim[1], latent_dim[2], Nsliders]), name='walk_intermed', dtype=np.float32)
+
+        # apply walk
+        out_dlatents_new = out_dlatents
+        for i in range(Nsliders):
+            out_dlatents_new = out_dlatents_new + tf.reshape(
+                tf.expand_dims(alpha[:,i], axis=1)* tf.reshape(w[:,:,:,i], (1, -1)), (-1, 16, z.shape[1]))
+
+        # get output after applying walk
+        transformed_output = tf.transpose(Gs.components.synthesis.get_output_for(
+            out_dlatents_new, is_validation=True, randomize_noise=True), [0, 2, 3, 1])
+
+        # L_2 loss
+        loss = tf.losses.compute_weighted_loss(tf.square(transformed_output-target), weights=mask)
+
+        # ops to rescale the stylegan output range ([-1, 1]) to uint8 range [0, 255]
+        float_im = tf.placeholder(tf.float32, outputs_orig.shape)
+        uint8_im = tflib.convert_images_to_uint8(tf.convert_to_tensor(float_im, dtype=tf.float32))
+
+        def initialize_uninitialized(sess):
+            global_vars          = tf.global_variables()
+            is_not_initialized   = sess.run([tf.is_variable_initialized(var) for var in global_vars])
+            not_initialized_vars = [v for (v, f) in zip(global_vars, is_not_initialized) if not f]
+
+            print([str(i.name) for i in not_initialized_vars])
+            if len(not_initialized_vars):
+                sess.run(tf.variables_initializer(not_initialized_vars))
+                return not_initialized_vars
+        
+        lr = 0.001
+        num_samples = 2000
+        sess = tf.get_default_session()
+        not_initialized_vars = initialize_uninitialized(sess)
+
+        # change to loss_lpips to optimize using lpips loss instead
+        train_step = tf.train.AdamOptimizer(lr).minimize(loss, var_list=not_initialized_vars, 
+                                                        name='AdamOpter')
+
+        # this time init Adam's vars:
+        not_initialized_vars = initialize_uninitialized(sess)
+
+        def testInterSteer(Nsliders, z_inputs):
+            a = np.linspace(0, 1, 6) #[0. 0.2 0.4 0.6 0.8 1.]
+            # print("z_inputs ", z_inputs.shape)
+            # ims = []
+            for i in range(a.shape[0]):
+                alpha_val_test = np.ones((1, Nsliders)) * -a[i]
+                #Suppress Red and Blue (using slider), but increase one color (G)
+                alpha_val_test[:, 1] = a[i]
+                target_fn,_ = get_target_np(out_zs, alpha_val_test)
+
+            #     im_out = sess.run(transformed_output, {z: zs[s], alpha: alpha_val_test})
+            #     #Scale
+            #     im_out = sess.run(uint8_im, {float_im: im_out})
+            #     target_fn = sess.run(uint8_im, {float_im: target_fn})
+            #     ims.append(im_out)
+            # canvas = PIL.Image.new('RGB', (512*6, 512), 'white')
+            # for j, img in enumerate(ims):
+            #     canvas.paste(PIL.Image.fromarray(img[0], 'RGB'), (512*j, 0))
+            # canvas.save('trained.png')
+
+        def get_target_np(outputs_zs, alpha):
+            if not np.any(alpha): # alpha is all zeros
+                return outputs_zs, np.ones(outputs_zs.shape)
+            
+            assert(outputs_zs.shape[0] == alpha.shape[0])
+            
+            target_fn = np.copy(outputs_zs)
+            for b in range(outputs_zs.shape[0]):
+                for i in range(3):
+                    target_fn[b,:,:,i] = target_fn[b,:,:,i]+alpha[b,i]
+
+            mask_out = np.ones(outputs_zs.shape)
+            return target_fn, mask_out
+        
+        saver = tf.train.Saver(tf.trainable_variables(scope='walk'))
+        loss_vals = []
+        random_seed = 0
+        rnd = np.random.RandomState(random_seed)
+        zs = rnd.randn(num_samples, dim_z)
+
+        n_epoch = 10
+        optim_iter = 0
+        batch_size = 4
+        for epoch in range(n_epoch):
+            for batch_start in range(0, num_samples, batch_size):
+                alpha_val = np.random.random(size=(batch_size, Nsliders))-0.5
+                s = slice(batch_start, min(num_samples, batch_start + batch_size))
+
+                #get original images (by passing batch of random z-values)
+                #the original image is generated by the pretrained stylegan model
+                feed_dict = {z: zs[s]}
+                out_orig_imgs = sess.run(outputs_orig, feed_dict=feed_dict)
+                
+                #Apply random alpha vals to change the slider (rgb) values in the image randomly and get the target image
+                target_imgs, mask_out = get_target_np(out_orig_imgs, alpha_val)
+
+                #Feed the target image to the optimizer, which "walks" or changes the intermediate w-mapping. This slightly different w-mapping generates similar image, but forces it to have features similar to target image. In this example, target image has slightly different rgb values applied.
+                #The loss used is l2_loss, which simply calculates pixel-wise differences in the generated and target image.
+                feed_dict = {z: zs[s], alpha: alpha_val, target: target_imgs, mask: mask_out}
+                curr_loss, _ = sess.run([loss, train_step], feed_dict=feed_dict)
+                print(batch_start, curr_loss)
+
+                #For testing
+                #generated_imgs - get the transformed output images from the sess graph, with the current random alpha_val applied to the current mini-batch of random z-values as input
+                feed_dict = {z: zs[s], alpha: alpha_val}
+                    #you must supply all tf.placeholder values to get intermediate values from the sess graph
+                generated_imgs = sess.run(transformed_output, feed_dict=feed_dict)
+
+                #Rescale the img from ([-1, 1]) to uint8 range [0, 255]
+                out_orig_imgs = sess.run(uint8_im, {float_im: out_orig_imgs})
+                generated_imgs = sess.run(uint8_im, {float_im: generated_imgs})
+                target_imgs = sess.run(uint8_im, {float_im: target_imgs})
+                #Display canvas with the transformed img
+                canvas = PIL.Image.new('RGB', (512*3, 512), 'white')
+                canvas.paste(PIL.Image.fromarray(out_orig_imgs[0], 'RGB'))
+                canvas.paste(PIL.Image.fromarray(generated_imgs[0], 'RGB'), (512*1,0))
+                canvas.paste(PIL.Image.fromarray(target_imgs[0], 'RGB'), (512*2,0))
+                canvas.save('trained.png')
+
+                #Test a single seed image while training to see the changes in the color
+                a = np.linspace(0, 1, 6)
+                sample_seed = 0
+                s = slice(sample_seed, sample_seed + 1)
+
+                # print(zs[s].shape, zs[sample_seed].shape)
+                feed_dict = {z: zs[s]}
+                orig_imgs = sess.run(outputs_orig, feed_dict=feed_dict)
+                canvas = PIL.Image.new('RGB', (512*a.shape[0], 512), 'white')
+                for i in range(a.shape[0]):
+                    alpha_val_test = np.ones((zs[s].shape[0], Nsliders)) * -a[i]
+                    alpha_val_test[:, 1] = a[i]
+                    target_img,_ = get_target_np(orig_imgs, alpha_val_test)
+                    im_out = sess.run(transformed_output, {z: zs[s], alpha: alpha_val_test})
+                    im_out = sess.run(uint8_im, {float_im: im_out})
+                    canvas.paste(PIL.Image.fromarray(im_out[0], 'RGB'), (512*i,0))
+                canvas.save('trained2.png')
+        saver.save(sess, '{}/model_{}.ckpt'.format('output', optim_iter*batch_size), write_meta_graph=False, write_state=False)
+
+    def saveOrShowSamplesFromModel(self, Gs, showPlt=False, filename='samples.png'):
+        synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
+        img_size = 512 #Should be the output size of model using 'get_output_for'
+        src_seeds=[0,1,2,3,4]
+        src_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in src_seeds)
+        src_dlatents = Gs.components.mapping.run(src_latents, None)
+        src_images = Gs.components.synthesis.run(src_dlatents, randomize_noise=False, **synthesis_kwargs)
+        canvas = PIL.Image.new('RGB', (img_size * len(src_seeds), img_size), 'white')
+        for col, src_image in enumerate(list(src_images)):
+            canvas.paste(PIL.Image.fromarray(src_image, 'RGB'), (col * img_size, 0))
+        if showPlt:
+            plt.imshow(canvas)
+            plt.grid(False)
+            plt.axis('off')
+            plt.show()
+        else:
+            canvas.save(filename)
+    ##################################### Gan Steer ##############################################
+
     def makeModels(self, loadPerpetual=False):
         self.broadcast({"log": "Making Models", "type": "replace", "logid": "makeModel"})
         self.encodeGen, self.styleGanGenerator, self.styleGanDiscriminator = self.getPretrainedStyleGanNetworks()
