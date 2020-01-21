@@ -463,6 +463,8 @@ class Network:
                         out_split.append(out_gpu)
 
                 with tf.device("/cpu:0"):
+                    for outputs in zip(*out_split):
+                        print("outputs ", outputs)
                     out_expr = [tf.concat(outputs, axis=0) for outputs in zip(*out_split)]
                     self._run_cache[key] = in_expr, out_expr
 
@@ -477,6 +479,7 @@ class Network:
             mb_end = min(mb_begin + minibatch_size, num_items)
             mb_num = mb_end - mb_begin
             mb_in = [src[mb_begin : mb_end] if src is not None else np.zeros([mb_num] + shape[1:]) for src, shape in zip(in_arrays, self.input_shapes)]
+            # print('out_expr ', out_expr)
             mb_out = tf.get_default_session().run(out_expr, dict(zip(in_expr, mb_in)))
 
             for dst, src in zip(out_arrays, mb_out):

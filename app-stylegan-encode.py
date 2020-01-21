@@ -46,6 +46,8 @@ from encoder.generator_model import Generator
 from encoder.perceptual_model import PerceptualModel, load_images
 from keras.applications.resnet50 import preprocess_input
 from sklearn.linear_model import LogisticRegression, SGDClassifier
+from scipy.io import wavfile
+import moviepy.editor
 
 alignImgDir = "server\\temp\\aligned_images\\"
 encodeImgDir = "server\\temp\\encoded_images\\"
@@ -99,9 +101,10 @@ class StyleGanEncoding():
         # self.playLatent(weights=[0.3,0.7])
         # self.loadAttributes()
         # self.drawFigures()
-        # self.loadStyleMixing()
+        self.loadStyleMixing()
         # self.performStyleMixing()
-        self.loadNoiseMixer(config={'minLayer': '0', 'maxLayer': 15})
+        # self.loadNoiseMixer(config={'minLayer': '0', 'maxLayer': 15})
+        # self.testMusicEncoding()
     
     def makeModels(self, loadPerpetual=False):
         self.broadcast({"log": "Making Models", "type": "replace", "logid": "makeModel"})
@@ -537,17 +540,17 @@ class StyleGanEncoding():
             self.makeModels()
             Gs = self.styleGanGenerator
         synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
-        # src_seeds=[639,701,687,615,2268] 
-        # dst_seeds=[888,829,1898,1733,1614]
-        src_seeds = np.random.randint(low=1, high=3000, size=(5)).tolist()
-        dst_seeds = np.random.randint(low=1, high=3000, size=(5)).tolist()
+        src_seeds=[639,701,687,615,2268] 
+        dst_seeds=[888,829,1898,1733,1614]
+        # src_seeds = np.random.randint(low=1, high=3000, size=(5)).tolist()
+        # dst_seeds = np.random.randint(low=1, high=3000, size=(5)).tolist()
         print(src_seeds, dst_seeds)
         src_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in src_seeds)
         dst_latents = np.stack(np.random.RandomState(seed).randn(Gs.input_shape[1]) for seed in dst_seeds)
         src_dlatents = Gs.components.mapping.run(src_latents, None) # [seed, layer, component]
         dst_dlatents = Gs.components.mapping.run(dst_latents, None) # [seed, layer, component]
         src_images = Gs.components.synthesis.run(src_dlatents, randomize_noise=False, **synthesis_kwargs)
-        dst_images = Gs.components.synthesis.run(dst_dlatents, randomize_noise=False, **synthesis_kwargs)
+        dst_images = Gs.components.synthesis.run(dst_dlatents, randomize_noise=False, print_progress=True, **synthesis_kwargs)
 
         image_size=256
         for seed,img in zip(src_seeds, src_images):
@@ -567,11 +570,18 @@ class StyleGanEncoding():
             Gs = self.styleGanGenerator
         print('performStyleMixing ', config)
         synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
-        minL = int(config['minLayer'])
-        maxL = int(config['maxLayer'])
+        if config is None:
+            minL = 0
+            maxL = 0
+            src_seed = 639
+            dst_seed = 888
+        else:
+            minL = int(config['minLayer'])
+            maxL = int(config['maxLayer'])
+            src_seed = int(config['src'])
+            dst_seed = int(config['dest'])
+        
         layers_to_mix = range(minL,maxL)
-        src_seed = int(config['src'])
-        dst_seed = int(config['dest'])
         src_dlatent_dict = next((item for item in self.src_dlatents_w_seeds if item["seed"] == src_seed), None)
         if src_dlatent_dict is not None:
             src_dlatent = src_dlatent_dict['dlatent']
@@ -585,6 +595,7 @@ class StyleGanEncoding():
         mixed_dlatent[layers_to_mix] = src_dlatent[layers_to_mix]
         #Expand dlatent shape [18,512] => [1,18,512] to match Gs required shape
         mixed_dlatent = np.stack([mixed_dlatent * 1])
+        
         row_images = Gs.components.synthesis.run(mixed_dlatent, randomize_noise=False, **synthesis_kwargs)
         img = PIL.Image.fromarray(row_images[0], 'RGB')
         image_size = 512
@@ -603,15 +614,17 @@ class StyleGanEncoding():
         # for name, var in Gs.components.synthesis.vars.items():
         #     if name.startswith('noise'):
         #         print(var.shape)
-        # for name, var in Gs.components.mapping.vars.items():
-        #     print(name, var.shape)
-        synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
-        Gsc = Gs.clone()
-        noise_vars = [var for name, var in Gsc.components.synthesis.vars.items() if name.startswith('noise')]
-        noise_pairs = list(zip(noise_vars, tflib.run(noise_vars))) # [(var, val), ...]
-
-        seeds = [seed]
-        zlatents = np.stack(np.random.RandomState(seed).randn(Gsc.input_shape[1]) for seed in seeds)
+        for name, var in Gs.components.synthesis.vars.items():
+            print(name, var.shape)
+        # synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True), minibatch_size=8)
+        # Gsc = Gs.clone()
+        # noise_vars = [var for name, var in Gsc.components.synthesis.vars.items() if name.startswith('noise')]
+        # noise_pairs = list(zip(noise_vars, tflib.run(noise_vars))) # [(var, val), ...]
+        print(Gs.components.synthesis.output_templates)
+        # conv_vars = [var for name, var in Gsc.components.synthesis.vars.items() if name.startswith('512x512/Conv0_up/weight')]
+        # conv_pairs = list(zip(conv_vars, tflib.run(conv_vars)))
+        # seeds = [seed]
+        # zlatents = np.stack(np.random.RandomState(seed).randn(Gsc.input_shape[1]) for seed in seeds)
         # minL = int(config['minLayer'])
         # maxL = int(config['maxLayer'])
         # layers_with_noise = range(minL,maxL)
@@ -639,49 +652,127 @@ class StyleGanEncoding():
         #########################
         all_images = []
         allPrevNoise = []
-        for j in range(0,18):
-            dict_var = {var: val * (1 if i == j else 0) for i, (var, val) in enumerate(noise_pairs)}
-            allPrevNoise.append(dict_var)
-            tflib.set_vars(dict_var)
-            range_images = Gsc.run(zlatents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
-            img = PIL.Image.fromarray(range_images[0], 'RGB')
-            img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
-            all_images.append(img)
-        self.saveImgWithAllNoise(all_images, filename="baby.png")
+        # for j in range(0,18):
+        #     dict_var = {var: val * (1 if i == j else 0) for i, (var, val) in enumerate(noise_pairs)}
+        #     allPrevNoise.append(dict_var)
+        #     tflib.set_vars(dict_var)
+        #     range_images = Gsc.run(zlatents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
+        #     img = PIL.Image.fromarray(range_images[0], 'RGB')
+        #     img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+        #     all_images.append(img)
+        # self.saveImgWithAllNoise(all_images, filename="baby.png")
         # self.broadcastTrainingImages(img)
-        seed = 1967
-        print("doing caren")
-        Gsc2 = Gs.clone()
-        noise_vars = [var for name, var in Gsc2.components.synthesis.vars.items() if name.startswith('noise')]
-        noise_pairs = list(zip(noise_vars, tflib.run(noise_vars))) # [(var, val), ...]
-        seeds = [seed]
-        zlatents = np.stack(np.random.RandomState(seed).randn(Gsc2.input_shape[1]) for seed in seeds)
-        all_images = []
-        for j in range(0,18):
-            var_dict = {}
-            for i, (var, val) in enumerate(noise_pairs):
-                # var_dict[var] = val * (1 if i == j else 0)
-                # var_dict[var] = allPrevNoise[j].get(var)
-                if j == 0:
-                    print(allPrevNoise[j])
-            # tflib.set_vars(var_dict)
-
-            # dict_var = {var: val * (1 if i == j else 0) for i, (var, val) in enumerate(noise_pairs)}
-            # tflib.set_vars(dict_var)
-
-            range_images = Gsc2.run(zlatents, None, truncation_psi=1, randomize_noise=False, **synthesis_kwargs)
-            img = PIL.Image.fromarray(range_images[0], 'RGB')
-            img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
-            all_images.append(img)
 
         # self.saveImgWithAllNoise(all_images, filename="baby.png")
-        self.saveImgWithAllNoise(all_images, filename="caren.png")
+        # self.saveImgWithAllNoise(all_images, filename="caren.png")
 
     def saveImgWithAllNoise(self, all_images, image_size=256, filename="const.png"):
         canvas = PIL.Image.new('RGB', (image_size*18, image_size), 'white')
         for i in range(18):
             canvas.paste(all_images[i], (i*image_size,0))
         canvas.save(filename)
+    
+    ##################### Music Encoding ######################
+    def testMusicEncoding(self):
+        audio = {}
+        fps = 60
+        for mp3_filename in [f for f in os.listdir('music') if f.endswith('.mp3')]:
+            mp3_filename = f'music/{mp3_filename}'
+            wav_filename = mp3_filename[:-4] + '.wav'
+            if not os.path.exists(wav_filename):
+                audio_clip = moviepy.editor.AudioFileClip(mp3_filename)
+                audio_clip.write_audiofile(wav_filename, fps=44100, nbytes=2, codec='pcm_s16le')
+            track_name = os.path.basename(wav_filename)[15:-5]
+            print(os.path.basename(wav_filename))
+            rate, signal = wavfile.read(wav_filename)
+            print(rate, signal.shape)
+            signal = np.mean(signal, axis=1) # to mono (2 channels to 1)
+            signal = np.abs(signal)
+            seed = signal.shape[0]
+            duration = signal.shape[0] / rate
+            frames = int(np.ceil(duration * fps))
+            samples_per_frame = signal.shape[0] / frames
+            audio[track_name] = np.zeros(frames, dtype=signal.dtype)
+            print(audio)
+            for frame in range(frames):
+                start = int(round(frame * samples_per_frame))
+                stop = int(round((frame + 1) * samples_per_frame))
+                audio[track_name][frame] = np.mean(signal[start:stop], axis=0)
+            audio[track_name] /= max(audio[track_name])
+        print(audio.keys())
+        # for track in sorted(audio.keys()):
+        #     plt.figure(figsize=(8, 3))
+        #     plt.title(track)
+        #     plt.plot(audio[track])
+        #     plt.show()
+
+        if self.styleGanGenerator is None:
+            self.makeModels()
+        Gs = self.styleGanGenerator
+        Gs_kwargs = dnnlib.EasyDict()
+        Gs_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+        Gs_kwargs.randomize_noise = False
+        Gs_syn_kwargs = dnnlib.EasyDict()
+        Gs_syn_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+        Gs_syn_kwargs.randomize_noise = False
+        Gs_syn_kwargs.minibatch_size = 4
+        noise_vars = [var for name, var in Gs.components.synthesis.vars.items() if name.startswith('noise')]
+        w_avg = Gs.get_var('dlatent_avg')
+
+        def normalize_vector(v):
+            return v * np.std(w_avg) / np.std(v) + np.mean(w_avg) - np.mean(v)
+
+        def get_ws(n, frames, seed):
+            filename = f'cache/ws_{n}_{frames}_{seed}.npy'
+            if not os.path.exists(filename):
+                src_ws = np.random.RandomState(seed).randn(n, 512)
+                ws = np.empty((frames, 512))
+                for i in range(512):
+                    x = np.linspace(0, 3*frames, 3*len(src_ws), endpoint=False)
+                    y = np.tile(src_ws[:, i], 3)
+                    x_ = np.linspace(0, 3*frames, 3*frames, endpoint=False)
+                    y_ = interp1d(x, y, kind='quadratic', fill_value='extrapolate')(x_)
+                    ws[:, i] = y_[frames:2*frames]
+                np.save(filename, ws)
+            else:
+                ws = np.load(filename)
+            return ws
+
+        def render_frame(t):
+            global base_index
+            frame = np.clip(np.int(np.round(t * fps)), 0, frames - 1)
+            base_index += base_speed * audio['Instrumental'][frame]**2
+            base_w = base_ws[int(round(base_index)) % len(base_ws)]
+            base_w = np.tile(base_w, (18, 1))
+            psi = 0.5 + audio['FX'][frame] / 2
+            base_w = w_avg + (base_w - w_avg) * psi
+            mix_w = np.tile(mix_ws[frame], (18, 1))
+            mix_w = w_avg + (mix_w - w_avg) * 0.75
+            ranges = [range(0, 4), range(4, 8), range(8, 18)]
+            values = [audio[track][frame] for track in ['Drums', 'E Drums', 'Synth']]
+            w = mix_styles(base_w, mix_w, zip(ranges, values))
+            w += mouth_open * audio['Vocal'][frame] * 1.5
+            image = Gs.components.synthesis.run(np.stack([w]), **Gs_syn_kwargs)[0]
+            image = PIL.Image.fromarray(image).resize((size, size), PIL.Image.LANCZOS)
+            return np.array(image)
+
+        size = 1080
+        seconds = int(np.ceil(duration))
+        resolution = 10
+        base_frames = resolution * frames
+        base_ws = get_ws(seconds, base_frames, seed)
+        base_speed = base_frames / sum(audio['']**2)
+        base_index = 0
+        mix_ws = get_ws(seconds, frames, seed + 1)
+        mouth_open = normalize_vector(-np.load('cache/mouth_ratio.npy'))
+
+        mp4_filename = 'cache/CultureShock.mp4'
+        video_clip = moviepy.editor.VideoClip(render_frame, duration=duration)
+        audio_clip_i = moviepy.editor.AudioFileClip('data/Culture Shock (Instrumental).wav')
+        audio_clip_v = moviepy.editor.AudioFileClip('data/Culture Shock (Vocal).wav')
+        audio_clip = moviepy.editor.CompositeAudioClip([audio_clip_i, audio_clip_v])
+        video_clip = video_clip.set_audio(audio_clip)
+        video_clip.write_videofile(mp4_filename, fps=fps, codec='libx264', audio_codec='aac', bitrate='8M')
     ################### Thread Methods ###################################
     def doWork(self, msg):
         # print("do work StyleGanEncoding", msg)
